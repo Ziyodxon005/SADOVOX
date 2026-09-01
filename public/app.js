@@ -813,12 +813,12 @@ function openDLModal() {
   `;
   document.body.appendChild(el);
   document.getElementById('dl-cancel').onclick = () => {
-    // Darhol UI yangilansin
-    const statusEl = document.getElementById('dl-status-txt');
-    const cancelBtn = document.getElementById('dl-cancel');
-    if (statusEl) statusEl.textContent = 'Bekor qilinmoqda...';
-    if (cancelBtn) { cancelBtn.disabled = true; cancelBtn.textContent = '⏳ To\'xtatilmoqda...'; }
     _dlAbort?.abort();
+    // Darhol modal yopiladi — async jarayon o'z-o'zidan abort bo'ladi
+    closeDLModal();
+    showStatus('Bekor qilindi', 'error');
+    const btn = $('download-btn');
+    if (btn) btn.disabled = false;
   };
 }
 
@@ -1013,6 +1013,11 @@ async function buildMP4WebCodecs(videoBlob, audioBlob, onProgress, signal) {
 /** mp4box.js bilan MP4 ni demux qiladi, H264 samplelarni qaytaradi */
 function demuxMP4Video(videoBlob, signal, onProgress) {
   return new Promise(async (resolve, reject) => {
+    // Abort signal kelishi bilan Promise darhol rad qilinadi
+    if (signal?.aborted) { reject(new DOMException('Aborted', 'AbortError')); return; }
+    const onAbort = () => reject(new DOMException('Aborted', 'AbortError'));
+    signal?.addEventListener('abort', onAbort, { once: true });
+
     const MP4Box = window.MP4Box;
     if (!MP4Box) { reject(new Error('MP4Box yuklanmadi')); return; }
 
@@ -1058,13 +1063,16 @@ function demuxMP4Video(videoBlob, signal, onProgress) {
     };
 
     file.onFlush = () => {
+      signal?.removeEventListener('abort', onAbort);
+      if (signal?.aborted) return; // Abort bo'lsa resolve qilmaymiz
       if (!meta) { reject(new Error('Video metadata yo\'q')); return; }
       resolve({ ...meta, samples });
     };
 
-    file.onError = (e) => reject(new Error('MP4 parse: ' + e));
+    file.onError = (e) => { signal?.removeEventListener('abort', onAbort); reject(new Error('MP4 parse: ' + e)); };
 
     const ab = await videoBlob.arrayBuffer();
+    if (signal?.aborted) return; // ArrayBuffer o'qish jarayonida abort bo'lgan bo'lsa
     ab.fileStart = 0;
     file.appendBuffer(ab);
     file.flush();
