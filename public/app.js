@@ -801,11 +801,14 @@ async function loadFFmpeg() {
   const { toBlobURL } = await import('https://cdn.jsdelivr.net/npm/@ffmpeg/util@0.12.1/+esm');
 
   const ffmpeg = new FFmpeg();
-  const baseURL = 'https://unpkg.com/@ffmpeg/core@0.12.6/dist/esm';
+  const coreURL   = 'https://unpkg.com/@ffmpeg/core@0.12.6/dist/esm';
+  const ffmpegCDN = 'https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.12.10/dist/esm';
 
+  // Barchasini blob: URL ga o'giramiz → same-origin → COEP bloklamaydi
   await ffmpeg.load({
-    coreURL: await toBlobURL(`${baseURL}/ffmpeg-core.js`, 'text/javascript'),
-    wasmURL: await toBlobURL(`${baseURL}/ffmpeg-core.wasm`, 'application/wasm'),
+    coreURL:   await toBlobURL(`${coreURL}/ffmpeg-core.js`,   'text/javascript'),
+    wasmURL:   await toBlobURL(`${coreURL}/ffmpeg-core.wasm`, 'application/wasm'),
+    workerURL: await toBlobURL(`${ffmpegCDN}/worker.js`,      'text/javascript'),
   });
 
   _ffmpeg = ffmpeg;
