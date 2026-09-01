@@ -360,7 +360,7 @@ function setupDubbedPlayback(audioBlob) {
   $('dub-btn').classList.add('hidden');
   $('stop-btn').classList.add('hidden');
   showDownloadBtn(true);
-  showStatus('🎧 Saqlangan dublyaj — Play bosing', 'ready');
+  showStatus('🎧 Saqlangan dublyaj — Playni bosing', 'ready');
 }
 
 function cleanupDubAudio() {
