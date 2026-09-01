@@ -5,16 +5,10 @@
  * server.js dagi /api/merge-video endpoint'ni serverless qilib ko'chirilgan.
  */
 
-import ffmpeg from 'fluent-ffmpeg';
-import ffmpegPath from 'ffmpeg-static';
-import { IncomingForm } from 'formidable';
-import { existsSync, unlinkSync, writeFileSync } from 'fs';
+import { existsSync, unlinkSync, writeFileSync, readFileSync } from 'fs';
 import { join } from 'path';
 import { tmpdir } from 'os';
 
-ffmpeg.setFfmpegPath(ffmpegPath);
-
-// Vercel serverless'da body parsing'ni o'chiramiz
 export const config = {
   api: {
     bodyParser: false,
@@ -25,12 +19,13 @@ export const config = {
 /**
  * Formidable bilan multipart form parse qilish
  */
-function parseForm(req) {
+async function parseForm(req) {
+  const formidable = (await import('formidable')).default;
+  const form = formidable({
+    maxFileSize: 500 * 1024 * 1024,
+    keepExtensions: true,
+  });
   return new Promise((resolve, reject) => {
-    const form = new IncomingForm({
-      maxFileSize: 500 * 1024 * 1024, // 500 MB
-      keepExtensions: true,
-    });
     form.parse(req, (err, fields, files) => {
       if (err) reject(err);
       else resolve({ fields, files });
@@ -56,9 +51,14 @@ export default async function handler(req, res) {
   let formTmpFiles = [];
 
   try {
+    // Lazy import — ffmpeg faqat kerak bo'lganda yuklanadi
+    const ffmpegStatic = (await import('ffmpeg-static')).default;
+    const ffmpegLib = (await import('fluent-ffmpeg')).default;
+    ffmpegLib.setFfmpegPath(ffmpegStatic);
+
     const { fields, files } = await parseForm(req);
-    const videoFile = files.video?.[0] || files.video;
-    const audioFile = files.audio?.[0] || files.audio;
+    const videoFile = Array.isArray(files.video) ? files.video[0] : files.video;
+    const audioFile = Array.isArray(files.audio) ? files.audio[0] : files.audio;
 
     if (!videoFile || !audioFile) {
       return res.status(400).json({ error: 'Video yoki audio fayl yo\'q' });
@@ -67,26 +67,26 @@ export default async function handler(req, res) {
     formTmpFiles.push(videoFile.filepath, audioFile.filepath);
 
     // Formidable tmp fayllaridan bizning tmp fayllarga ko'chirish
-    const { readFileSync } = await import('fs');
     writeFileSync(tmpVideo, readFileSync(videoFile.filepath));
     writeFileSync(tmpAudio, readFileSync(audioFile.filepath));
 
-    const filename = (fields.name?.[0] || fields.name || 'sadovox_dubbed').replace(/[^\w\-. ]/g, '_');
+    const nameField = Array.isArray(fields.name) ? fields.name[0] : fields.name;
+    const filename = (nameField || 'sadovox_dubbed').replace(/[^\w\-. ]/g, '_');
 
     res.setHeader('Content-Type', 'video/mp4');
     res.setHeader('Content-Disposition', `attachment; filename="${filename}.mp4"`);
 
     await new Promise((resolve, reject) => {
-      const proc = ffmpeg()
-        .input(tmpVideo)                          // 0: asl video
-        .input(tmpAudio).inputFormat('webm')      // 1: dubbed audio
+      const proc = ffmpegLib()
+        .input(tmpVideo)
+        .input(tmpAudio).inputFormat('webm')
         .outputOptions([
-          '-map 0:v:0',                           // video treki asl videodan
-          '-map 1:a:0',                           // audio treki dubbed audiodan
-          '-c:v copy',                            // videoni qayta enkodlamaslik (tez!)
+          '-map 0:v:0',
+          '-map 1:a:0',
+          '-c:v copy',
           '-c:a aac',
           '-b:a 192k',
-          '-shortest',                            // qisqaroq trekda tugaydi
+          '-shortest',
           '-movflags frag_keyframe+empty_moov+default_base_moof',
         ])
         .format('mp4');
@@ -113,7 +113,6 @@ export default async function handler(req, res) {
       res.status(500).json({ error: err.message || 'Server xatosi' });
     }
   } finally {
-    // Formidable tmp fayllarini tozalash
     for (const f of formTmpFiles) {
       try { unlinkSync(f); } catch {}
     }

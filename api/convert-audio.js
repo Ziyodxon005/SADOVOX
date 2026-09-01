@@ -6,14 +6,8 @@
  */
 
 import { Readable } from 'stream';
-import ffmpeg from 'fluent-ffmpeg';
-import ffmpegPath from 'ffmpeg-static';
-import { IncomingForm } from 'formidable';
 import { readFileSync, unlinkSync } from 'fs';
 
-ffmpeg.setFfmpegPath(ffmpegPath);
-
-// Vercel serverless'da body parsing'ni o'chiramiz (formidable o'zi parse qiladi)
 export const config = {
   api: {
     bodyParser: false,
@@ -24,12 +18,13 @@ export const config = {
 /**
  * Formidable bilan multipart form parse qilish
  */
-function parseForm(req) {
+async function parseForm(req) {
+  const formidable = (await import('formidable')).default;
+  const form = formidable({
+    maxFileSize: 500 * 1024 * 1024,
+    keepExtensions: true,
+  });
   return new Promise((resolve, reject) => {
-    const form = new IncomingForm({
-      maxFileSize: 500 * 1024 * 1024, // 500 MB
-      keepExtensions: true,
-    });
     form.parse(req, (err, fields, files) => {
       if (err) reject(err);
       else resolve({ fields, files });
@@ -45,15 +40,21 @@ export default async function handler(req, res) {
   let tmpFiles = [];
 
   try {
+    // Lazy import — ffmpeg faqat kerak bo'lganda yuklanadi
+    const ffmpegStatic = (await import('ffmpeg-static')).default;
+    const ffmpegLib = (await import('fluent-ffmpeg')).default;
+    ffmpegLib.setFfmpegPath(ffmpegStatic);
+
     const { fields, files } = await parseForm(req);
-    const audioFile = files.audio?.[0] || files.audio;
+    const audioFile = Array.isArray(files.audio) ? files.audio[0] : files.audio;
 
     if (!audioFile) {
       return res.status(400).json({ error: 'Fayl yo\'q' });
     }
 
     tmpFiles.push(audioFile.filepath);
-    const filename = (fields.name?.[0] || fields.name || 'sadovox_dubbed').replace(/[^\w\-. ]/g, '_');
+    const nameField = Array.isArray(fields.name) ? fields.name[0] : fields.name;
+    const filename = (nameField || 'sadovox_dubbed').replace(/[^\w\-. ]/g, '_');
 
     res.setHeader('Content-Type', 'audio/mp4');
     res.setHeader('Content-Disposition', `attachment; filename="${filename}.mp4"`);
@@ -61,7 +62,7 @@ export default async function handler(req, res) {
     const inputStream = Readable.from(readFileSync(audioFile.filepath));
 
     await new Promise((resolve, reject) => {
-      const proc = ffmpeg(inputStream)
+      const proc = ffmpegLib(inputStream)
         .inputFormat('webm')
         .audioCodec('aac')
         .audioBitrate('192k')
@@ -87,7 +88,6 @@ export default async function handler(req, res) {
       res.status(500).json({ error: err.message || 'Server xatosi' });
     }
   } finally {
-    // Tmp fayllarni tozalash
     for (const f of tmpFiles) {
       try { unlinkSync(f); } catch {}
     }
