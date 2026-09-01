@@ -812,7 +812,14 @@ function openDLModal() {
     </div>
   `;
   document.body.appendChild(el);
-  document.getElementById('dl-cancel').onclick = () => { _dlAbort?.abort(); };
+  document.getElementById('dl-cancel').onclick = () => {
+    // Darhol UI yangilansin
+    const statusEl = document.getElementById('dl-status-txt');
+    const cancelBtn = document.getElementById('dl-cancel');
+    if (statusEl) statusEl.textContent = 'Bekor qilinmoqda...';
+    if (cancelBtn) { cancelBtn.disabled = true; cancelBtn.textContent = '⏳ To\'xtatilmoqda...'; }
+    _dlAbort?.abort();
+  };
 }
 
 function setDLP(pct, msg) {
@@ -969,8 +976,14 @@ async function buildMP4WebCodecs(videoBlob, audioBlob, onProgress, signal) {
 
   // 5. Video samplelar (H264 COPY — qayta kodlamasdan!)
   onProgress(55, 'Video treklar qo\'shilmoqda...');
-  for (let i = 0; i < vi.samples.length; i++) {
-    if (signal.aborted) throw new DOMException('Aborted', 'AbortError');
+  const total5 = vi.samples.length;
+  for (let i = 0; i < total5; i++) {
+    // Har 50 frameda browser eventlarini qayta ishlash uchun yield
+    if (i % 50 === 0) {
+      await new Promise(r => setTimeout(r, 0));
+      if (signal.aborted) throw new DOMException('Aborted', 'AbortError');
+      onProgress(55 + (i / total5) * 7, `Video frames: ${i}/${total5}`);
+    }
     const s = vi.samples[i];
     const chunk = new EncodedVideoChunk({
       type: s.is_sync ? 'key' : 'delta',
@@ -1103,7 +1116,8 @@ function encodeToAAC(audioBuffer, muxer, signal, onProgress) {
       ad.close();
       pos += count;
       onProgress?.(pos / total);
-      requestAnimationFrame(next);
+      // setTimeout(0) ishlatamiz: background tabda ham ishlaydi + abort darhol tekshiriladi
+      setTimeout(next, 0);
     }
     next();
   });
