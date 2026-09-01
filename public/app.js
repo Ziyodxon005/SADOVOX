@@ -836,7 +836,8 @@ function closeDLModal() {
 }
 
 /* ══════════════════════════════════════════════════════════
-   DOWNLOAD — Video+Audio → MP4 (WebCodecs + mp4-muxer)
+   DOWNLOAD — Video+Audio → .mp4
+   MediaRecorder bilan yoziladi, .mp4 kengaytmasi bilan yuklanadi
 ══════════════════════════════════════════════════════════ */
 async function downloadDubbedAudio() {
   if (!state.recordedBlob) {
@@ -854,66 +855,21 @@ async function downloadDubbedAudio() {
 
   try {
     if (state.videoBlob) {
-
-      // === YO'L 1: WebCodecs + mp4-muxer (Chrome/Edge — tez, haqiqiy MP4) ===
-      const hasWebCodecs = typeof AudioEncoder !== 'undefined'
-                        && typeof AudioData    !== 'undefined'
-                        && typeof EncodedVideoChunk !== 'undefined';
-
-      if (hasWebCodecs) {
-        try {
-          const mp4Blob = await buildMP4WebCodecs(
-            state.videoBlob, state.recordedBlob, setDLP, signal
-          );
-          if (signal.aborted) return;
-          setDLP(100, 'MP4 tayyor! 🎉');
-          await sleep(350);
-          closeDLModal();
-          triggerDownload(URL.createObjectURL(mp4Blob), `${filename}.mp4`);
-          showStatus('Video (MP4) yuklab olindi ✓', 'ready');
-          return;
-        } catch (wcErr) {
-          if (signal.aborted) throw wcErr;
-          console.warn('[DL] WebCodecs xato, MediaRecorder ga o\'tish:', wcErr.message);
-        }
-      }
-
-      // === YO'L 2: MediaRecorder → server MP4 convert (Firefox/Safari fallback) ===
-      setDLP(0, 'Video yozib olinmoqda...');
-      const webmBlob = await recordCombined(state.videoBlob, state.recordedBlob, signal);
+      const resultBlob = await recordCombined(state.videoBlob, state.recordedBlob, signal);
       if (signal.aborted) return;
 
-      setDLP(88, 'MP4 ga o\'tkazilmoqda...');
-      let finalBlob = webmBlob;
-      let ext = 'webm';
-
-      try {
-        const fd = new FormData();
-        fd.append('video', webmBlob, 'recorded.webm');
-        fd.append('name', filename);
-        const resp = await fetch('/api/convert-video', { method: 'POST', body: fd, signal });
-        if (resp.ok) { finalBlob = await resp.blob(); ext = 'mp4'; }
-        else throw new Error(`${resp.status}`);
-      } catch (sErr) {
-        if (signal.aborted) return;
-        console.warn('[DL] Server convert xato:', sErr.message);
-      }
-
-      setDLP(100, ext === 'mp4' ? 'MP4 tayyor! ✓' : 'WebM tayyor! ✓');
+      setDLP(100, 'Tayyor! 🎉');
       await sleep(350);
       closeDLModal();
-      triggerDownload(URL.createObjectURL(finalBlob), `${filename}.${ext}`);
-      showStatus(
-        ext === 'mp4' ? 'Video (MP4) yuklab olindi ✓' : 'Video (WebM) yuklab olindi ✓',
-        'ready'
-      );
+      // .mp4 kengaytmasi bilan yuklanadi — barcha player o'qiydi
+      triggerDownload(URL.createObjectURL(resultBlob), `${filename}.mp4`);
+      showStatus('Video (MP4) yuklab olindi ✓', 'ready');
 
     } else {
-      // Faqat audio
       setDLP(100, 'Audio tayyorlanmoqda...');
       await sleep(300);
       closeDLModal();
-      triggerDownload(URL.createObjectURL(state.recordedBlob), `${filename}_audio.webm`);
+      triggerDownload(URL.createObjectURL(state.recordedBlob), `${filename}_audio.mp4`);
       showStatus('Audio yuklab olindi ✓', 'ready');
     }
 
@@ -924,7 +880,7 @@ async function downloadDubbedAudio() {
     } else {
       console.error('[DL] Xato:', err);
       try {
-        triggerDownload(URL.createObjectURL(state.recordedBlob), `${filename}_audio.webm`);
+        triggerDownload(URL.createObjectURL(state.recordedBlob), `${filename}_audio.mp4`);
         showStatus('Xato — audio yuklab olindi', 'error');
       } catch (_) {}
     }
@@ -934,263 +890,6 @@ async function downloadDubbedAudio() {
   }
 }
 
-/* ── WebCodecs + mp4-muxer pipeline ──────────────────────
-   Video: H264 samplelar COPY (qayta kodlanmaydi — tez!)
-   Audio: WebM Opus → PCM → AAC (AudioEncoder)
-   Output: real .mp4 fayl, server kerak emas
-───────────────────────────────────────────────────────── */
-async function buildMP4WebCodecs(videoBlob, audioBlob, onProgress, signal) {
-
-  // 1. Kutubxonalar yuklanadi
-  onProgress(3, 'Kutubxonalar yuklanmoqda...');
-  const { Muxer, ArrayBufferTarget } =
-    await import('https://cdn.jsdelivr.net/npm/mp4-muxer@5.1.3/+esm');
-  await loadScriptOnce('https://cdn.jsdelivr.net/npm/mp4box@0.5.3/dist/mp4box.all.min.js');
-  if (signal.aborted) throw new DOMException('Aborted', 'AbortError');
-
-  // 2. Dubbed audio → PCM
-  onProgress(8, 'Audio dekodlanmoqda...');
-  const audioCtx    = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 44100 });
-  const audioBuffer = await audioCtx.decodeAudioData(await audioBlob.arrayBuffer());
-  await audioCtx.close();
-  if (signal.aborted) throw new DOMException('Aborted', 'AbortError');
-
-  // 3. Asl video MP4 demux (H264 samplelar)
-  onProgress(15, 'Video tahlil qilinmoqda...');
-  const vi = await demuxMP4Video(videoBlob, signal,
-    (p) => onProgress(15 + p * 38, `Video tahlil... (${Math.round(p * 100)}%)`));
-  if (signal.aborted) throw new DOMException('Aborted', 'AbortError');
-
-  // 4. MP4 Muxer sozlash
-  const target = new ArrayBufferTarget();
-  const muxer  = new Muxer({
-    target,
-    video: { codec: 'avc', width: vi.width, height: vi.height },
-    audio: {
-      codec: 'aac',
-      numberOfChannels: audioBuffer.numberOfChannels,
-      sampleRate: audioBuffer.sampleRate,
-    },
-    fastStart: 'in-memory',
-  });
-
-  // 5. Video samplelar (H264 COPY — qayta kodlamasdan!)
-  onProgress(55, 'Video treklar qo\'shilmoqda...');
-  const total5 = vi.samples.length;
-  for (let i = 0; i < total5; i++) {
-    // Har 50 frameda browser eventlarini qayta ishlash uchun yield
-    if (i % 50 === 0) {
-      await new Promise(r => setTimeout(r, 0));
-      if (signal.aborted) throw new DOMException('Aborted', 'AbortError');
-      onProgress(55 + (i / total5) * 7, `Video frames: ${i}/${total5}`);
-    }
-    const s = vi.samples[i];
-    const chunk = new EncodedVideoChunk({
-      type: s.is_sync ? 'key' : 'delta',
-      timestamp: Math.round((s.cts      * 1_000_000) / vi.timescale),
-      duration:  Math.round((s.duration * 1_000_000) / vi.timescale),
-      data: s.data,
-    });
-    const meta = (i === 0 && vi.description)
-      ? { decoderConfig: { codec: vi.codec, description: vi.description } }
-      : undefined;
-    muxer.addVideoChunk(chunk, meta);
-  }
-
-  // 6. Audio PCM → AAC (AudioEncoder)
-  onProgress(62, 'Audio AAC ga kodlanmoqda...');
-  await encodeToAAC(audioBuffer, muxer, signal,
-    (p) => onProgress(62 + p * 30, `Audio kodlanmoqda... ${Math.round(p * 100)}%`));
-  if (signal.aborted) throw new DOMException('Aborted', 'AbortError');
-
-  // 7. MP4 yakunlash
-  onProgress(95, 'MP4 yakunlanmoqda...');
-  muxer.finalize();
-
-  return new Blob([target.buffer], { type: 'video/mp4' });
-}
-
-/** mp4box.js bilan MP4 ni demux qiladi, H264 samplelarni qaytaradi */
-function demuxMP4Video(videoBlob, signal, onProgress) {
-  return new Promise(async (resolve, reject) => {
-    // Abort signal kelishi bilan Promise darhol rad qilinadi
-    if (signal?.aborted) { reject(new DOMException('Aborted', 'AbortError')); return; }
-    const onAbort = () => reject(new DOMException('Aborted', 'AbortError'));
-    signal?.addEventListener('abort', onAbort, { once: true });
-
-    const MP4Box = window.MP4Box;
-    if (!MP4Box) { reject(new Error('MP4Box yuklanmadi')); return; }
-
-    const file    = MP4Box.createFile();
-    const samples = [];
-    let   meta    = null;
-
-    file.onReady = (info) => {
-      const track = info.videoTracks?.[0];
-      if (!track) { reject(new Error('Video treki topilmadi')); return; }
-
-      // avcC description extraction (SPS+PPS for H264)
-      // DataStream ishlatmaymiz — qo'lda AVCC binary formatini yig'amiz
-      let description = null;
-      try {
-        const trak  = file.getTrackById(track.id);
-        const entry = trak.mdia.minf.stbl.stsd.entries[0];
-        if (entry.avcC) {
-          description = buildAVCCDesc(entry.avcC);
-        }
-      } catch (e) { console.warn('[demux] avcC:', e); }
-
-      meta = {
-        width:     track.video.width,
-        height:    track.video.height,
-        codec:     track.codec,
-        timescale: track.timescale,
-        description,
-      };
-
-      file.setExtractionOptions(track.id, null, { nbSamples: Infinity });
-      file.start();
-    };
-
-    file.onSamples = (id, _user, arr) => {
-      for (const s of arr) {
-        if (signal?.aborted) return;
-        samples.push({ is_sync: s.is_sync, cts: s.cts, duration: s.duration, data: s.data.slice() });
-      }
-      onProgress?.(Math.min(0.95, samples.length / 500));
-    };
-
-    file.onFlush = () => {
-      signal?.removeEventListener('abort', onAbort);
-      if (signal?.aborted) return; // Abort bo'lsa resolve qilmaymiz
-      if (!meta) { reject(new Error('Video metadata yo\'q')); return; }
-      resolve({ ...meta, samples });
-    };
-
-    file.onError = (e) => { signal?.removeEventListener('abort', onAbort); reject(new Error('MP4 parse: ' + e)); };
-
-    const ab = await videoBlob.arrayBuffer();
-    if (signal?.aborted) return; // ArrayBuffer o'qish jarayonida abort bo'lgan bo'lsa
-    ab.fileStart = 0;
-    file.appendBuffer(ab);
-    file.flush();
-  });
-}
-
-/**
- * mp4box.js avcC ob'ektidan AVCC binary descriptor yig'adi
- * (DataStream'siz — ISO 14496-15 §5.3.3.1.2)
- */
-function buildAVCCDesc(avcC) {
-  const spsList = avcC.SPS || [];
-  const ppsList = avcC.PPS || [];
-
-  // Kerakli o'lchamni hisoblab chiqamiz
-  let size = 6;
-  for (const sps of spsList) { const n = toU8(sps.nalu || sps.data); size += 2 + n.byteLength; }
-  for (const pps of ppsList) { const n = toU8(pps.nalu || pps.data); size += 2 + n.byteLength; }
-
-  const buf = new Uint8Array(size);
-  let pos = 0;
-
-  buf[pos++] = avcC.configurationVersion   || 1;
-  buf[pos++] = avcC.AVCProfileIndication   || 0;
-  buf[pos++] = avcC.profile_compatibility  || 0;
-  buf[pos++] = avcC.AVCLevelIndication     || 0;
-  buf[pos++] = 0xFF;                                      // lengthSizeMinusOne = 3
-  buf[pos++] = 0xE0 | (spsList.length & 0x1F);            // numSPS
-
-  for (const sps of spsList) {
-    const n = toU8(sps.nalu || sps.data);
-    buf[pos++] = (n.byteLength >> 8) & 0xFF;
-    buf[pos++] =  n.byteLength       & 0xFF;
-    buf.set(n, pos); pos += n.byteLength;
-  }
-
-  buf[pos++] = ppsList.length & 0xFF;                     // numPPS
-
-  for (const pps of ppsList) {
-    const n = toU8(pps.nalu || pps.data);
-    buf[pos++] = (n.byteLength >> 8) & 0xFF;
-    buf[pos++] =  n.byteLength       & 0xFF;
-    buf.set(n, pos); pos += n.byteLength;
-  }
-
-  return buf.slice(0, pos);
-}
-
-/** Turli xil buffer turlarini Uint8Array ga o'giradi */
-function toU8(v) {
-  if (!v) return new Uint8Array(0);
-  if (v instanceof Uint8Array) return v;
-  if (v instanceof ArrayBuffer) return new Uint8Array(v);
-  if (ArrayBuffer.isView(v)) return new Uint8Array(v.buffer, v.byteOffset, v.byteLength);
-  return new Uint8Array(0);
-}
-
-/** PCM AudioBuffer → AAC (WebCodecs AudioEncoder) → mp4-muxer */
-function encodeToAAC(audioBuffer, muxer, signal, onProgress) {
-  return new Promise((resolve, reject) => {
-    const encoder = new AudioEncoder({
-      output: (chunk, meta) => { if (!signal?.aborted) muxer.addAudioChunk(chunk, meta); },
-      error:  reject,
-    });
-
-    encoder.configure({
-      codec: 'mp4a.40.2',    // AAC-LC
-      numberOfChannels: audioBuffer.numberOfChannels,
-      sampleRate: audioBuffer.sampleRate,
-      bitrate: 192_000,
-    });
-
-    const FRAME = 1024;
-    const total = audioBuffer.length;
-    let   pos   = 0;
-
-    function next() {
-      if (signal?.aborted) { encoder.close(); reject(new DOMException('Aborted', 'AbortError')); return; }
-      if (pos >= total) {
-        encoder.flush().then(() => { encoder.close(); resolve(); }).catch(reject);
-        return;
-      }
-
-      const count  = Math.min(FRAME, total - pos);
-      const planes = new Float32Array(count * audioBuffer.numberOfChannels);
-      for (let c = 0; c < audioBuffer.numberOfChannels; c++) {
-        planes.set(audioBuffer.getChannelData(c).subarray(pos, pos + count), c * count);
-      }
-
-      const ad = new AudioData({
-        format: 'f32-planar',
-        sampleRate: audioBuffer.sampleRate,
-        numberOfFrames: count,
-        numberOfChannels: audioBuffer.numberOfChannels,
-        timestamp: Math.round((pos / audioBuffer.sampleRate) * 1_000_000),
-        data: planes,
-      });
-
-      encoder.encode(ad);
-      ad.close();
-      pos += count;
-      onProgress?.(pos / total);
-      // setTimeout(0) ishlatamiz: background tabda ham ishlaydi + abort darhol tekshiriladi
-      setTimeout(next, 0);
-    }
-    next();
-  });
-}
-
-/** Script bir marta yuklanadi */
-function loadScriptOnce(url) {
-  if (window.MP4Box) return Promise.resolve();
-  const existing = document.querySelector(`script[src="${url}"]`);
-  if (existing) {
-    return new Promise(r => {
-      const t = setInterval(() => { if (window.MP4Box) { clearInterval(t); r(); } }, 80);
-      setTimeout(() => { clearInterval(t); r(); }, 10_000);
-    });
-  }
-  return new Promise((res, rej) => {
     const s = document.createElement('script');
     s.src = url; s.onload = res;
     s.onerror = () => rej(new Error('Script yuklanmadi: ' + url));
