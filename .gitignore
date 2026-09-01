@@ -1,0 +1,19 @@
+# ⚠️ Maxfiy ma'lumotlar — hech qachon yuklamang!
+.env
+.env.*
+*.env
+
+# Node modules
+node_modules/
+
+# OS fayllar
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+npm-debug.log*
+
+# Temp
+tmp/
+temp/

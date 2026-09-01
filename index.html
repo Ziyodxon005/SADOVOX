@@ -1,0 +1,253 @@
+<!DOCTYPE html>
+<html lang="uz">
+
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>SADO VOX — Real-Vaqtda Dublyaj</title>
+  <meta name="description" content="SADO VOX: Har qanday videoni real-vaqtda o'zbek tiliga dublyaj qiling." />
+  <link rel="stylesheet" href="style.css" />
+  <link rel="icon" type="image/png" href="logo2.png" />
+</head>
+
+<body>
+
+  <!-- ═══════════════════════════════════════════════════════════
+       VIEW: SPLASH  (faqat birinchi marta)
+  ════════════════════════════════════════════════════════════ -->
+  <div id="view-splash">
+    <div class="splash-bg"></div>
+
+    <div class="splash-wrap">
+      <img src="logo2.png" alt="SADO VOX" class="splash-logo" />
+
+      <!-- Slider viewport -->
+      <div class="splash-viewport">
+        <div class="splash-track" id="splash-track">
+
+          <!-- Slide 1 -->
+          <div class="splash-slide">
+            <div class="slide-icon-wrap">🎬</div>
+            <h2>Video yuklang</h2>
+            <p>MP4, WebM, MKV, MOV yoki AVI formatdagi<br>har qanday video faylni yuklang</p>
+          </div>
+
+          <!-- Slide 2 -->
+          <div class="splash-slide">
+            <div class="slide-icon-wrap">🎙</div>
+            <h2>Dublyajni boshlang</h2>
+            <p>AI texnologiyasi yordamida video<br>o'zbek tilida real-vaqtda dublyaj qilinadi</p>
+          </div>
+
+          <!-- Slide 3 -->
+          <div class="splash-slide">
+            <div class="slide-icon-wrap">💾</div>
+            <h2>Saqlang va yuklab oling</h2>
+            <p>Dublyaj tugagach loyiha avtomatik saqlanadi<br>va fayl yuklab olinadi</p>
+          </div>
+
+        </div>
+      </div>
+
+      <!-- Dots -->
+      <div class="splash-dots" id="splash-dots">
+        <span class="s-dot active" data-idx="0"></span>
+        <span class="s-dot" data-idx="1"></span>
+        <span class="s-dot" data-idx="2"></span>
+      </div>
+
+      <!-- Nav Buttons -->
+      <div class="splash-nav">
+        <button id="splash-skip" class="btn-splash-ghost"><span class="btn-label-desktop">O'tkazib yuborish</span><span
+            class="btn-skip-icon">✕</span></button>
+        <div class="splash-nav-right">
+          <button id="splash-prev" class="btn-splash-prev" disabled>←</button>
+          <button id="splash-next" class="btn-splash-next"><span class="btn-label-desktop">Keyingi</span> →</button>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+
+  <!-- ═══════════════════════════════════════════════════════════
+       VIEW: DASHBOARD
+  ════════════════════════════════════════════════════════════ -->
+  <div id="view-dashboard" class="hidden">
+
+    <header class="topbar">
+      <div class="topbar-logo">
+        <img src="logo.png" alt="SADO VOX" class="logo-img" />
+        <span class="logo-name">SADO VOX</span>
+      </div>
+      <div class="topbar-badge">AI Dublyaj</div>
+    </header>
+
+    <main class="dash-main">
+      <div class="dash-header">
+        <h2 class="dash-title">Loyihalarim</h2>
+        <button id="new-project-btn" class="btn-new-project">
+          <span class="btn-plus">＋</span>
+          <span class="btn-label-desktop">Yangi Loyiha</span>
+        </button>
+      </div>
+
+      <div id="projects-grid" class="projects-grid">
+        <!-- Dynamically populated -->
+      </div>
+
+      <div id="projects-empty" class="projects-empty hidden">
+        <div class="empty-icon">📂</div>
+        <p>Hali loyihalar yo'q</p>
+        <small>Yangi loyiha yaratish uchun yuqoridagi tugmani bosing</small>
+      </div>
+    </main>
+
+    <footer class="site-footer">
+      <span>© 2026 SADO VOX</span>
+      <span class="footer-sep">·</span>
+      <span>Ishlab chiquvchi:
+        <a href="https://t.me/Lutfiddinovziyodxon" target="_blank" rel="noopener" class="footer-dev">Ziyodxon</a>
+      </span>
+    </footer>
+
+  </div>
+
+
+  <!-- ═══════════════════════════════════════════════════════════
+       VIEW: EDITOR
+  ════════════════════════════════════════════════════════════ -->
+  <div id="view-editor" class="hidden">
+
+    <header class="topbar">
+      <div class="topbar-logo">
+        <img src="logo.png" alt="SADO VOX" class="logo-img" />
+        <span class="logo-name">SADO VOX</span>
+      </div>
+      <div class="topbar-right">
+        <button id="back-to-dash" class="btn-back">
+          <span class="btn-back-icon">←</span>
+          <span class="btn-label-desktop">Orqaga</span>
+        </button>
+        <div class="topbar-badge btn-label-desktop">AI Dublyaj</div>
+      </div>
+    </header>
+
+    <div class="main-content">
+
+      <!-- Setup -->
+      <section id="setup-section" class="hero-section" aria-label="Sozlamalar">
+        <div class="hero-title">
+          <h1>SADO VOX</h1>
+          <p>Video yuklang — biz qolganini qilamiz</p>
+        </div>
+
+        <div class="upload-card glass-card">
+          <div id="drop-zone" class="drop-zone" role="button" tabindex="0" aria-label="Video fayl yuklash">
+            <div class="drop-inner">
+              <div class="drop-icon-wrap">
+                <span class="drop-icon">🎬</span>
+              </div>
+              <p class="drop-text">
+                <strong>Video faylni bu yerga tashlang</strong>
+                <span>yoki bosib tanlang</span>
+              </p>
+              <span class="drop-formats">MP4 · WebM · MKV · MOV · AVI</span>
+            </div>
+          </div>
+        </div>
+        <input id="file-input" type="file" accept="video/*" hidden />
+      </section>
+
+      <!-- Player -->
+      <section id="player-section" class="player-section hidden" aria-label="Video pleer">
+
+        <div class="video-card glass-card">
+          <div class="video-wrapper">
+            <video id="main-video" controls preload="metadata"></video>
+            <div class="video-topbar">
+              <span class="video-filename" id="video-name">video.mp4</span>
+              <span class="original-muted-badge">🔇 Original jim</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="controls-card glass-card">
+          <div class="status-bar">
+            <div class="status-indicator">
+              <div id="status-dot" class="status-dot status-idle"></div>
+              <span id="status-text">Tayyor emas</span>
+            </div>
+            <span id="latency-badge" class="latency-pill hidden">⚡ Dublyaj</span>
+          </div>
+
+          <div class="action-bar">
+            <button id="dub-btn" class="btn btn-dub" disabled>
+              <span id="dub-btn-icon">▶</span>
+              <span id="dub-btn-label">Dublyajni Boshlash</span>
+            </button>
+            <button id="stop-btn" class="btn btn-stop" disabled title="To'xtatish">⏹</button>
+            <button id="download-btn" class="btn btn-download hidden" title="Dubbed audioni yuklab olish">⬇</button>
+            <button id="reset-btn" class="btn btn-reset" title="Yangidan boshlash">🔄</button>
+          </div>
+        </div>
+
+
+        <div id="transcript-panel" class="transcript-grid hidden">
+          <div class="transcript-box">
+            <div class="transcript-head">
+              <span class="t-dot t-original"></span>
+              <span>Original</span>
+            </div>
+            <div id="input-transcript" class="transcript-body" role="log">
+              <em>Nutq shu yerda paydo bo'ladi...</em>
+            </div>
+          </div>
+          <div class="transcript-box">
+            <div class="transcript-head">
+              <span class="t-dot t-dubbed"></span>
+              <span>O'zbek Dublyaj</span>
+            </div>
+            <div id="output-transcript" class="transcript-body" role="log">
+              <em>Tarjima shu yerda ko'rinadi...</em>
+            </div>
+          </div>
+        </div>
+
+      </section>
+    </div>
+
+    <footer class="site-footer">
+      <span>© 2026 SADO VOX</span>
+      <span class="footer-sep">·</span>
+      <span>Ishlab chiquvchi:
+        <a href="https://t.me/Lutfiddinovziyodxon" target="_blank" rel="noopener" class="footer-dev">Ziyodxon</a>
+      </span>
+    </footer>
+
+  </div>
+
+
+  <!-- Error Toast -->
+  <div id="error-toast" role="alert">
+    <span class="toast-icon">⚠️</span>
+    <span id="error-msg"></span>
+  </div>
+
+  <!-- Custom Confirm Dialog -->
+  <div id="confirm-overlay" class="confirm-overlay hidden" role="dialog" aria-modal="true">
+    <div class="confirm-box">
+      <div class="confirm-icon">🗑</div>
+      <h3 class="confirm-title" id="confirm-title">O'chirishni tasdiqlang</h3>
+      <p class="confirm-msg" id="confirm-msg">Bu loyihani o'chirmoqchimisiz?</p>
+      <div class="confirm-actions">
+        <button id="confirm-cancel" class="btn-confirm btn-confirm-cancel">Bekor qilish</button>
+        <button id="confirm-ok" class="btn-confirm btn-confirm-ok">O'chirish</button>
+      </div>
+    </div>
+  </div>
+
+  <script type="module" src="app.js"></script>
+</body>
+
+</html>
