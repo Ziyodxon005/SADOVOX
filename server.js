@@ -157,6 +157,10 @@ app.use(express.static(__dirname, {
   index: 'index.html',
 }));
 
+// ─── Keep-Alive: UptimeRobot yoki cron-job.org ping uchun ────
+app.get('/ping', (_req, res) => res.json({ status: 'ok', time: Date.now() }));
+app.get('/health', (_req, res) => res.json({ status: 'ok', uptime: process.uptime() }));
+
 // ─── API: WebM → MP4 Audio Konvertatsiya ──────────────────────
 const upload = multer({
   storage: multer.memoryStorage(),
