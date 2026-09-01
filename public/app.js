@@ -1102,7 +1102,7 @@ function showLatency(val) {
 
 function updateDubBtn(mode) {
   const icons = { start: '▶', pause: '⏸', resume: '▶' };
-  const labels = { start: 'Dublyajni Boshlash', pause: 'Pauza', resume: 'Davom Ettirish' };
+  const labels = { start: 'Boshlash', pause: 'Pauza', resume: 'Davom Ettirish' };
   $('dub-btn-icon').textContent = icons[mode];
   $('dub-btn-label').textContent = labels[mode];
 }
