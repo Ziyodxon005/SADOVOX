@@ -638,6 +638,8 @@ async function setupAudioContext() {
 /**
  * Dubbed audio (Int16 PCM, 24kHz) ni ijro etadi va yozib oladi.
  */
+const MAX_AUDIO_LAG = 0.3; // 300ms — ko'proq lag bo'lsa reset
+
 function playDubbedAudio(int16Buffer) {
   const ctx = state.audioContext;
   if (!ctx) return;
@@ -661,14 +663,16 @@ function playDubbedAudio(int16Buffer) {
   const source = ctx.createBufferSource();
   source.buffer = audioBuffer;
   source.connect(ctx.destination);
-  // Also connect to recording destination
   if (state.recordingDest) source.connect(state.recordingDest);
 
   const bufferDuration = float32.length / 24000;
   const now = ctx.currentTime;
-  if (state.nextPlayTime < now + 0.01) {
-    state.nextPlayTime = now + 0.05;
+
+  // Agar nextPlayTime juda oldinda (>300ms lag) yoki orqada — reset
+  if (state.nextPlayTime < now || state.nextPlayTime > now + MAX_AUDIO_LAG) {
+    state.nextPlayTime = now + 0.05; // 50ms buffer
   }
+
   source.start(state.nextPlayTime);
   state.nextPlayTime += bufferDuration;
 }
