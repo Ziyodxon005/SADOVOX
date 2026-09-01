@@ -790,9 +790,6 @@ async function stopRecording() {
   });
 }
 
-/* ══════════════════════════════════════════════════════════
-   DOWNLOAD
-══════════════════════════════════════════════════════════ */
 async function downloadDubbedAudio() {
   if (!state.recordedBlob) {
     showError('Hali dublyaj audiosi yo\'q. Avval dublyaj qiling.');
@@ -804,7 +801,7 @@ async function downloadDubbedAudio() {
   $('download-btn').disabled = true;
   showStatus('Video tayyorlanmoqda...', 'loading');
 
-  // Video + Audio merge (to'liq MP4)
+  // Video + Audio merge — server-side ffmpeg bilan
   if (state.videoBlob) {
     try {
       showStatus('Video + Audio birlashtirilmoqda...', 'loading');
