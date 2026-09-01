@@ -890,13 +890,6 @@ async function downloadDubbedAudio() {
   }
 }
 
-    const s = document.createElement('script');
-    s.src = url; s.onload = res;
-    s.onerror = () => rej(new Error('Script yuklanmadi: ' + url));
-    document.head.appendChild(s);
-  });
-}
-
 /** MediaRecorder bilan video+audio yozib oladi (Firefox/Safari fallback) */
 async function recordCombined(videoBlob, audioBlob, signal) {
   const videoURL = URL.createObjectURL(videoBlob);
