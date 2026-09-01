@@ -228,9 +228,10 @@ async function buildProjectCard(p) {
   }
 
   // Info
-  const date = new Date(p.createdAt).toLocaleDateString('uz-UZ', {
-    day: '2-digit', month: 'short', year: 'numeric'
-  });
+  // Sana: "1 Sentabr 2026" ko'rinishida
+  const _d = new Date(p.createdAt);
+  const months = ['Yanvar','Fevral','Mart','Aprel','May','Iyun','Iyul','Avgust','Sentabr','Oktabr','Noyabr','Dekabr'];
+  const date = `${_d.getDate()} ${months[_d.getMonth()]} ${_d.getFullYear()}`;
 
   const hasAudio = await getBlob(`audio_${p.id}`).then(b => !!b).catch(() => false);
 
