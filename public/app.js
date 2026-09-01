@@ -812,18 +812,16 @@ function openDLModal() {
     </div>
   `;
   document.body.appendChild(el);
-  document.getElementById('dl-cancel').onclick = () => {
-    _dlAbort?.abort();
-  };
+  document.getElementById('dl-cancel').onclick = () => { _dlAbort?.abort(); };
 }
 
 function setDLP(pct, msg) {
   const fill   = document.getElementById('dl-fill');
   const status = document.getElementById('dl-status-txt');
   const label  = document.getElementById('dl-pct-txt');
-  if (fill)   fill.style.width   = Math.min(100, pct) + '%';
+  if (fill)          fill.style.width  = Math.min(100, pct) + '%';
   if (status && msg) status.textContent = msg;
-  if (label)  label.textContent  = Math.min(100, Math.round(pct)) + '%';
+  if (label)         label.textContent  = Math.min(100, Math.round(pct)) + '%';
 }
 
 function closeDLModal() {
@@ -831,7 +829,7 @@ function closeDLModal() {
 }
 
 /* ══════════════════════════════════════════════════════════
-   DOWNLOAD — Video+Audio → MP4
+   DOWNLOAD — Video+Audio → MP4 (WebCodecs + mp4-muxer)
 ══════════════════════════════════════════════════════════ */
 async function downloadDubbedAudio() {
   if (!state.recordedBlob) {
@@ -849,40 +847,53 @@ async function downloadDubbedAudio() {
 
   try {
     if (state.videoBlob) {
-      // 1. MediaRecorder bilan video+dubbed audio yozib olish
-      const webmBlob = await recordCombined(
-        state.videoBlob, state.recordedBlob, signal
-      );
 
+      // === YO'L 1: WebCodecs + mp4-muxer (Chrome/Edge — tez, haqiqiy MP4) ===
+      const hasWebCodecs = typeof AudioEncoder !== 'undefined'
+                        && typeof AudioData    !== 'undefined'
+                        && typeof EncodedVideoChunk !== 'undefined';
+
+      if (hasWebCodecs) {
+        try {
+          const mp4Blob = await buildMP4WebCodecs(
+            state.videoBlob, state.recordedBlob, setDLP, signal
+          );
+          if (signal.aborted) return;
+          setDLP(100, 'MP4 tayyor! 🎉');
+          await sleep(350);
+          closeDLModal();
+          triggerDownload(URL.createObjectURL(mp4Blob), `${filename}.mp4`);
+          showStatus('Video (MP4) yuklab olindi ✓', 'ready');
+          return;
+        } catch (wcErr) {
+          if (signal.aborted) throw wcErr;
+          console.warn('[DL] WebCodecs xato, MediaRecorder ga o\'tish:', wcErr.message);
+        }
+      }
+
+      // === YO'L 2: MediaRecorder → server MP4 convert (Firefox/Safari fallback) ===
+      setDLP(0, 'Video yozib olinmoqda...');
+      const webmBlob = await recordCombined(state.videoBlob, state.recordedBlob, signal);
       if (signal.aborted) return;
 
-      // 2. MP4 ga o'tkazishga urinin (server orqali)
       setDLP(88, 'MP4 ga o\'tkazilmoqda...');
-      let finalBlob = null;
+      let finalBlob = webmBlob;
       let ext = 'webm';
 
       try {
         const fd = new FormData();
         fd.append('video', webmBlob, 'recorded.webm');
         fd.append('name', filename);
-        const resp = await fetch('/api/convert-video', {
-          method: 'POST', body: fd, signal
-        });
-        if (resp.ok) {
-          finalBlob = await resp.blob();
-          ext = 'mp4';
-        } else {
-          throw new Error(`${resp.status}`);
-        }
-      } catch (convErr) {
+        const resp = await fetch('/api/convert-video', { method: 'POST', body: fd, signal });
+        if (resp.ok) { finalBlob = await resp.blob(); ext = 'mp4'; }
+        else throw new Error(`${resp.status}`);
+      } catch (sErr) {
         if (signal.aborted) return;
-        console.warn('[DL] Server convert xato, WebM yuklanadi:', convErr.message);
-        finalBlob = webmBlob;
-        ext = 'webm';
+        console.warn('[DL] Server convert xato:', sErr.message);
       }
 
       setDLP(100, ext === 'mp4' ? 'MP4 tayyor! ✓' : 'WebM tayyor! ✓');
-      await sleep(400);
+      await sleep(350);
       closeDLModal();
       triggerDownload(URL.createObjectURL(finalBlob), `${filename}.${ext}`);
       showStatus(
@@ -905,10 +916,9 @@ async function downloadDubbedAudio() {
       showStatus('Bekor qilindi', 'error');
     } else {
       console.error('[DL] Xato:', err);
-      // Oxirgi fallback — faqat audio
       try {
         triggerDownload(URL.createObjectURL(state.recordedBlob), `${filename}_audio.webm`);
-        showStatus('Xato yuz berdi — audio yuklab olindi', 'error');
+        showStatus('Xato — audio yuklab olindi', 'error');
       } catch (_) {}
     }
   } finally {
@@ -917,75 +927,250 @@ async function downloadDubbedAudio() {
   }
 }
 
-/** MediaRecorder bilan video+audio ni birlashtirib WebM blob qaytaradi */
+/* ── WebCodecs + mp4-muxer pipeline ──────────────────────
+   Video: H264 samplelar COPY (qayta kodlanmaydi — tez!)
+   Audio: WebM Opus → PCM → AAC (AudioEncoder)
+   Output: real .mp4 fayl, server kerak emas
+───────────────────────────────────────────────────────── */
+async function buildMP4WebCodecs(videoBlob, audioBlob, onProgress, signal) {
+
+  // 1. Kutubxonalar yuklanadi
+  onProgress(3, 'Kutubxonalar yuklanmoqda...');
+  const { Muxer, ArrayBufferTarget } =
+    await import('https://cdn.jsdelivr.net/npm/mp4-muxer@5.1.3/+esm');
+  await loadScriptOnce('https://cdn.jsdelivr.net/npm/mp4box@0.5.3/dist/mp4box.all.min.js');
+  if (signal.aborted) throw new DOMException('Aborted', 'AbortError');
+
+  // 2. Dubbed audio → PCM
+  onProgress(8, 'Audio dekodlanmoqda...');
+  const audioCtx    = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 44100 });
+  const audioBuffer = await audioCtx.decodeAudioData(await audioBlob.arrayBuffer());
+  await audioCtx.close();
+  if (signal.aborted) throw new DOMException('Aborted', 'AbortError');
+
+  // 3. Asl video MP4 demux (H264 samplelar)
+  onProgress(15, 'Video tahlil qilinmoqda...');
+  const vi = await demuxMP4Video(videoBlob, signal,
+    (p) => onProgress(15 + p * 38, `Video tahlil... (${Math.round(p * 100)}%)`));
+  if (signal.aborted) throw new DOMException('Aborted', 'AbortError');
+
+  // 4. MP4 Muxer sozlash
+  const target = new ArrayBufferTarget();
+  const muxer  = new Muxer({
+    target,
+    video: { codec: 'avc', width: vi.width, height: vi.height },
+    audio: {
+      codec: 'aac',
+      numberOfChannels: audioBuffer.numberOfChannels,
+      sampleRate: audioBuffer.sampleRate,
+    },
+    fastStart: 'in-memory',
+  });
+
+  // 5. Video samplelar (H264 COPY — qayta kodlamasdan!)
+  onProgress(55, 'Video treklar qo\'shilmoqda...');
+  for (let i = 0; i < vi.samples.length; i++) {
+    if (signal.aborted) throw new DOMException('Aborted', 'AbortError');
+    const s = vi.samples[i];
+    const chunk = new EncodedVideoChunk({
+      type: s.is_sync ? 'key' : 'delta',
+      timestamp: Math.round((s.cts      * 1_000_000) / vi.timescale),
+      duration:  Math.round((s.duration * 1_000_000) / vi.timescale),
+      data: s.data,
+    });
+    const meta = (i === 0 && vi.description)
+      ? { decoderConfig: { codec: vi.codec, description: vi.description } }
+      : undefined;
+    muxer.addVideoChunk(chunk, meta);
+  }
+
+  // 6. Audio PCM → AAC (AudioEncoder)
+  onProgress(62, 'Audio AAC ga kodlanmoqda...');
+  await encodeToAAC(audioBuffer, muxer, signal,
+    (p) => onProgress(62 + p * 30, `Audio kodlanmoqda... ${Math.round(p * 100)}%`));
+  if (signal.aborted) throw new DOMException('Aborted', 'AbortError');
+
+  // 7. MP4 yakunlash
+  onProgress(95, 'MP4 yakunlanmoqda...');
+  muxer.finalize();
+
+  return new Blob([target.buffer], { type: 'video/mp4' });
+}
+
+/** mp4box.js bilan MP4 ni demux qiladi, H264 samplelarni qaytaradi */
+function demuxMP4Video(videoBlob, signal, onProgress) {
+  return new Promise(async (resolve, reject) => {
+    const MP4Box = window.MP4Box;
+    if (!MP4Box) { reject(new Error('MP4Box yuklanmadi')); return; }
+
+    const file    = MP4Box.createFile();
+    const samples = [];
+    let   meta    = null;
+
+    file.onReady = (info) => {
+      const track = info.videoTracks?.[0];
+      if (!track) { reject(new Error('Video treki topilmadi')); return; }
+
+      // avcC description extraction (SPS+PPS for H264)
+      let description = null;
+      try {
+        const trak  = file.getTrackById(track.id);
+        const entry = trak.mdia.minf.stbl.stsd.entries[0];
+        if (entry.avcC) {
+          const stream = new MP4Box.DataStream(undefined, 0, MP4Box.DataStream.BIG_ENDIAN);
+          entry.avcC.write(stream);
+          // Box structure: [4-byte size][4-byte 'avcC'][actual data...]
+          description = new Uint8Array(stream.buffer, 8, stream.position - 8);
+        }
+      } catch (e) { console.warn('[demux] avcC:', e); }
+
+      meta = {
+        width:     track.video.width,
+        height:    track.video.height,
+        codec:     track.codec,
+        timescale: track.timescale,
+        description,
+      };
+
+      file.setExtractionOptions(track.id, null, { nbSamples: Infinity });
+      file.start();
+    };
+
+    file.onSamples = (id, _user, arr) => {
+      for (const s of arr) {
+        if (signal?.aborted) return;
+        samples.push({ is_sync: s.is_sync, cts: s.cts, duration: s.duration, data: s.data.slice() });
+      }
+      onProgress?.(Math.min(0.95, samples.length / 500));
+    };
+
+    file.onFlush = () => {
+      if (!meta) { reject(new Error('Video metadata yo\'q')); return; }
+      resolve({ ...meta, samples });
+    };
+
+    file.onError = (e) => reject(new Error('MP4 parse: ' + e));
+
+    const ab = await videoBlob.arrayBuffer();
+    ab.fileStart = 0;
+    file.appendBuffer(ab);
+    file.flush();
+  });
+}
+
+/** PCM AudioBuffer → AAC (WebCodecs AudioEncoder) → mp4-muxer */
+function encodeToAAC(audioBuffer, muxer, signal, onProgress) {
+  return new Promise((resolve, reject) => {
+    const encoder = new AudioEncoder({
+      output: (chunk, meta) => { if (!signal?.aborted) muxer.addAudioChunk(chunk, meta); },
+      error:  reject,
+    });
+
+    encoder.configure({
+      codec: 'mp4a.40.2',    // AAC-LC
+      numberOfChannels: audioBuffer.numberOfChannels,
+      sampleRate: audioBuffer.sampleRate,
+      bitrate: 192_000,
+    });
+
+    const FRAME = 1024;
+    const total = audioBuffer.length;
+    let   pos   = 0;
+
+    function next() {
+      if (signal?.aborted) { encoder.close(); reject(new DOMException('Aborted', 'AbortError')); return; }
+      if (pos >= total) {
+        encoder.flush().then(() => { encoder.close(); resolve(); }).catch(reject);
+        return;
+      }
+
+      const count  = Math.min(FRAME, total - pos);
+      const planes = new Float32Array(count * audioBuffer.numberOfChannels);
+      for (let c = 0; c < audioBuffer.numberOfChannels; c++) {
+        planes.set(audioBuffer.getChannelData(c).subarray(pos, pos + count), c * count);
+      }
+
+      const ad = new AudioData({
+        format: 'f32-planar',
+        sampleRate: audioBuffer.sampleRate,
+        numberOfFrames: count,
+        numberOfChannels: audioBuffer.numberOfChannels,
+        timestamp: Math.round((pos / audioBuffer.sampleRate) * 1_000_000),
+        data: planes,
+      });
+
+      encoder.encode(ad);
+      ad.close();
+      pos += count;
+      onProgress?.(pos / total);
+      requestAnimationFrame(next);
+    }
+    next();
+  });
+}
+
+/** Script bir marta yuklanadi */
+function loadScriptOnce(url) {
+  if (window.MP4Box) return Promise.resolve();
+  const existing = document.querySelector(`script[src="${url}"]`);
+  if (existing) {
+    return new Promise(r => {
+      const t = setInterval(() => { if (window.MP4Box) { clearInterval(t); r(); } }, 80);
+      setTimeout(() => { clearInterval(t); r(); }, 10_000);
+    });
+  }
+  return new Promise((res, rej) => {
+    const s = document.createElement('script');
+    s.src = url; s.onload = res;
+    s.onerror = () => rej(new Error('Script yuklanmadi: ' + url));
+    document.head.appendChild(s);
+  });
+}
+
+/** MediaRecorder bilan video+audio yozib oladi (Firefox/Safari fallback) */
 async function recordCombined(videoBlob, audioBlob, signal) {
   const videoURL = URL.createObjectURL(videoBlob);
   const audioURL = URL.createObjectURL(audioBlob);
-
-  const videoEl = document.createElement('video');
-  videoEl.src = videoURL;
-  videoEl.muted = true;
-  videoEl.playsInline = true;
+  const videoEl  = document.createElement('video');
+  videoEl.src = videoURL; videoEl.muted = true; videoEl.playsInline = true;
   videoEl.style.cssText = 'position:fixed;top:-9999px;left:-9999px;width:1px;height:1px;pointer-events:none;';
   document.body.appendChild(videoEl);
-
   const audioEl = new Audio(audioURL);
 
   try {
-    // Metadata kutish
     await new Promise((res, rej) => {
       videoEl.onloadedmetadata = res;
       videoEl.onerror = () => rej(new Error('Video yuklanmadi'));
       setTimeout(() => rej(new Error('Timeout')), 15000);
     });
-
     if (signal.aborted) throw new DOMException('Aborted', 'AbortError');
 
     const duration = videoEl.duration || 0;
-
-    // Audio stream
     const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
     const dest     = audioCtx.createMediaStreamDestination();
     audioCtx.createMediaElementSource(audioEl).connect(dest);
 
-    // Video stream
-    const vStream    = videoEl.captureStream ? videoEl.captureStream() : videoEl.mozCaptureStream();
-    const vTrack     = vStream.getVideoTracks()[0];
+    const vStream = videoEl.captureStream ? videoEl.captureStream() : videoEl.mozCaptureStream();
+    const vTrack  = vStream.getVideoTracks()[0];
     if (!vTrack) throw new Error('Video stream olinmadi');
 
     const combined = new MediaStream([vTrack, ...dest.stream.getTracks()]);
+    const mimeType = ['video/webm;codecs=vp9,opus','video/webm;codecs=vp8,opus','video/webm']
+      .find(t => MediaRecorder.isTypeSupported(t)) || 'video/webm';
 
-    const mimeType = [
-      'video/webm;codecs=vp9,opus',
-      'video/webm;codecs=vp8,opus',
-      'video/webm',
-    ].find(t => MediaRecorder.isTypeSupported(t)) || 'video/webm';
-
-    const recorder = new MediaRecorder(combined, {
-      mimeType,
-      videoBitsPerSecond: 2_000_000,
-      audioBitsPerSecond: 192_000,
-    });
-    const chunks = [];
+    const recorder = new MediaRecorder(combined, { mimeType, videoBitsPerSecond: 2_000_000 });
+    const chunks   = [];
     recorder.ondataavailable = e => e.data.size > 0 && chunks.push(e.data);
-    const recDone = new Promise(r => { recorder.onstop = r; });
+    const recDone  = new Promise(r => { recorder.onstop = r; });
 
-    // Abort orqali to'xtatish
-    const onAbort = () => {
-      videoEl.pause();
-      audioEl.pause();
-      if (recorder.state !== 'inactive') recorder.stop();
-    };
+    const onAbort = () => { videoEl.pause(); audioEl.pause(); if (recorder.state !== 'inactive') recorder.stop(); };
     signal.addEventListener('abort', onAbort, { once: true });
 
     recorder.start(200);
-    videoEl.currentTime = 0;
-    audioEl.currentTime = 0;
-    await videoEl.play();
-    audioEl.play().catch(() => {});
+    videoEl.currentTime = 0; audioEl.currentTime = 0;
+    await videoEl.play(); audioEl.play().catch(() => {});
 
-    // Progress interval
-    const interval = setInterval(() => {
+    const iv = setInterval(() => {
       if (duration > 0) {
         const pct  = Math.round((videoEl.currentTime / duration) * 85);
         const left = Math.max(0, Math.round(duration - videoEl.currentTime));
@@ -993,22 +1178,16 @@ async function recordCombined(videoBlob, audioBlob, signal) {
       }
     }, 400);
 
-    // Video tugashini kutish
-    await new Promise(r => {
-      videoEl.onended = r;
-      setTimeout(r, (duration + 15) * 1000);
-    });
+    await new Promise(r => { videoEl.onended = r; setTimeout(r, (duration + 15) * 1000); });
 
-    clearInterval(interval);
+    clearInterval(iv);
     signal.removeEventListener('abort', onAbort);
-
     if (signal.aborted) throw new DOMException('Aborted', 'AbortError');
 
     audioEl.pause();
     if (recorder.state !== 'inactive') recorder.stop();
     await recDone;
     audioCtx.close().catch(() => {});
-
     return new Blob(chunks, { type: mimeType });
 
   } finally {
@@ -1019,6 +1198,7 @@ async function recordCombined(videoBlob, audioBlob, signal) {
 }
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
+
 
 function triggerDownload(url, filename) {
   const a = document.createElement('a');
