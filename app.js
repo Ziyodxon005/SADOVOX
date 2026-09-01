@@ -34,6 +34,8 @@ const state = {
   mediaSource: null,
   nextPlayTime: 0,
   videoReady: false,
+  dubAudioScheduled: 0,  // dublyaj audio umumiy sekundlari
+  syncInterval: null,     // video-audio sync timer
   dubbing: false,
   paused: false,
   inputTranscript: '',
@@ -586,6 +588,11 @@ async function stopDubbing() {
   state.dubbing = false;
   state.paused = false;
   $('main-video').pause();
+  $('main-video').playbackRate = 1.0; // Normal tezlikka qaytarish
+
+  // Sinxronizatsiyani to'xtatish
+  if (state.syncInterval) { clearInterval(state.syncInterval); state.syncInterval = null; }
+  state.dubAudioScheduled = 0;
 
   if (state.gemini) {
     state.gemini.disconnect();
@@ -675,6 +682,44 @@ function playDubbedAudio(int16Buffer) {
 
   source.start(state.nextPlayTime);
   state.nextPlayTime += bufferDuration;
+
+  // Sinxronizatsiya uchun: umumiy dublyaj audio vaqtini kuzatamiz
+  state.dubAudioScheduled += bufferDuration;
+}
+
+/**
+ * Video tezligini dublyaj audioga moslashtiradi.
+ * Audio orqada qolsa — video sekinlashadi.
+ * Audio yetib kelsa — normal tezlikka qaytadi.
+ */
+function syncVideoToAudio() {
+  const vid = $('main-video');
+  if (!vid || vid.paused || !state.dubbing) return;
+
+  const videoTime = vid.currentTime;
+  const audioTime = state.dubAudioScheduled;
+
+  // Agar hali audio kelmagan bo'lsa — kutamiz
+  if (audioTime < 0.5) return;
+
+  const gap = videoTime - audioTime; // ijobiy = video oldinda
+
+  if (gap > 1.5) {
+    // Juda katta farq — video'ni sekinlatamiz
+    vid.playbackRate = 0.7;
+  } else if (gap > 0.8) {
+    // O'rtacha farq
+    vid.playbackRate = 0.85;
+  } else if (gap > 0.3) {
+    // Kichik farq
+    vid.playbackRate = 0.93;
+  } else if (gap < -0.3) {
+    // Audio oldinda — video'ni biroz tezlatamiz
+    vid.playbackRate = 1.1;
+  } else {
+    // Sinxron — normal tezlik
+    vid.playbackRate = 1.0;
+  }
 }
 
 // MediaElementSourceNode faqat bir marta yaratiladi (bir context uchun)
@@ -931,6 +976,11 @@ function attachAIListeners() {
     // Audio pipeline'ni yoqamiz
     startAudioCapture();
     startRecording();
+
+    // Sinxronizatsiya boshlash
+    state.dubAudioScheduled = 0;
+    if (state.syncInterval) clearInterval(state.syncInterval);
+    state.syncInterval = setInterval(syncVideoToAudio, 300);
 
     // Video FAQAT shu yerda boshlanadi — Gemini tayyor
     $('main-video').currentTime = 0;
