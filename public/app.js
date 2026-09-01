@@ -790,113 +790,235 @@ async function stopRecording() {
   });
 }
 
+/* ══════════════════════════════════════════════════════════
+   DOWNLOAD PROGRESS MODAL
+══════════════════════════════════════════════════════════ */
+let _dlAbort = null;
+
+function openDLModal() {
+  closeDLModal();
+  const el = document.createElement('div');
+  el.id = 'dl-overlay';
+  el.innerHTML = `
+    <div class="dl-card">
+      <span class="dl-card-icon">🎬</span>
+      <h3 class="dl-card-title">Video tayyorlanmoqda</h3>
+      <p class="dl-card-status" id="dl-status-txt">Boshlanyapti...</p>
+      <div class="dl-progress-track">
+        <div class="dl-progress-fill" id="dl-fill"></div>
+      </div>
+      <div class="dl-pct" id="dl-pct-txt">0%</div>
+      <button class="dl-cancel-btn" id="dl-cancel">✕ Bekor qilish</button>
+    </div>
+  `;
+  document.body.appendChild(el);
+  document.getElementById('dl-cancel').onclick = () => {
+    _dlAbort?.abort();
+  };
+}
+
+function setDLP(pct, msg) {
+  const fill   = document.getElementById('dl-fill');
+  const status = document.getElementById('dl-status-txt');
+  const label  = document.getElementById('dl-pct-txt');
+  if (fill)   fill.style.width   = Math.min(100, pct) + '%';
+  if (status && msg) status.textContent = msg;
+  if (label)  label.textContent  = Math.min(100, Math.round(pct)) + '%';
+}
+
+function closeDLModal() {
+  document.getElementById('dl-overlay')?.remove();
+}
+
+/* ══════════════════════════════════════════════════════════
+   DOWNLOAD — Video+Audio → MP4
+══════════════════════════════════════════════════════════ */
 async function downloadDubbedAudio() {
   if (!state.recordedBlob) {
     showError('Hali dublyaj audiosi yo\'q. Avval dublyaj qiling.');
     return;
   }
 
-  const name = state.projectName || 'dubbed';
-  const filename = `SADO_VOX_UZ_${name}`;
   $('download-btn').disabled = true;
+  _dlAbort = new AbortController();
+  const { signal } = _dlAbort;
+  openDLModal();
 
-  // Video + Audio — MediaRecorder bilan brauzerda birlashtirish
-  if (state.videoBlob) {
-    try {
-      showStatus('Video tayyorlanmoqda... iltimos kuting', 'loading');
+  const name     = state.projectName || 'dubbed';
+  const filename = `SADO_VOX_UZ_${name}`;
 
-      const videoURL = URL.createObjectURL(state.videoBlob);
-      const audioURL = URL.createObjectURL(state.recordedBlob);
+  try {
+    if (state.videoBlob) {
+      // 1. MediaRecorder bilan video+dubbed audio yozib olish
+      const webmBlob = await recordCombined(
+        state.videoBlob, state.recordedBlob, signal
+      );
 
-      // Yashirin video va audio elementlari
-      const videoEl = document.createElement('video');
-      videoEl.src = videoURL;
-      videoEl.muted = true; // original ovoz o'chiq
-      videoEl.playsInline = true;
-      videoEl.style.cssText = 'position:fixed;top:-9999px;left:-9999px;width:1px;height:1px';
-      document.body.appendChild(videoEl);
+      if (signal.aborted) return;
 
-      const audioEl = new Audio(audioURL);
+      // 2. MP4 ga o'tkazishga urinin (server orqali)
+      setDLP(88, 'MP4 ga o\'tkazilmoqda...');
+      let finalBlob = null;
+      let ext = 'webm';
 
-      await new Promise((res, rej) => {
-        videoEl.onloadedmetadata = res;
-        videoEl.onerror = rej;
-        setTimeout(rej, 10000);
-      });
+      try {
+        const fd = new FormData();
+        fd.append('video', webmBlob, 'recorded.webm');
+        fd.append('name', filename);
+        const resp = await fetch('/api/convert-video', {
+          method: 'POST', body: fd, signal
+        });
+        if (resp.ok) {
+          finalBlob = await resp.blob();
+          ext = 'mp4';
+        } else {
+          throw new Error(`${resp.status}`);
+        }
+      } catch (convErr) {
+        if (signal.aborted) return;
+        console.warn('[DL] Server convert xato, WebM yuklanadi:', convErr.message);
+        finalBlob = webmBlob;
+        ext = 'webm';
+      }
 
-      const duration = videoEl.duration || 0;
+      setDLP(100, ext === 'mp4' ? 'MP4 tayyor! ✓' : 'WebM tayyor! ✓');
+      await sleep(400);
+      closeDLModal();
+      triggerDownload(URL.createObjectURL(finalBlob), `${filename}.${ext}`);
+      showStatus(
+        ext === 'mp4' ? 'Video (MP4) yuklab olindi ✓' : 'Video (WebM) yuklab olindi ✓',
+        'ready'
+      );
 
-      // AudioContext — dubbed audio stream
-      const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-      const dest = audioCtx.createMediaStreamDestination();
-      const audioSrc = audioCtx.createMediaElementSource(audioEl);
-      audioSrc.connect(dest);
-
-      // Video stream + Audio stream birlashtirish
-      const videoStream = videoEl.captureStream
-        ? videoEl.captureStream()
-        : videoEl.mozCaptureStream();
-      const videoTracks = videoStream.getVideoTracks();
-      if (!videoTracks.length) throw new Error('Video stream olinmadi');
-
-      const combined = new MediaStream([videoTracks[0], ...dest.stream.getTracks()]);
-
-      // Eng yaxshi format tanlash
-      const mimeType = [
-        'video/webm;codecs=vp9,opus',
-        'video/webm;codecs=vp8,opus',
-        'video/webm',
-      ].find(t => MediaRecorder.isTypeSupported(t)) || 'video/webm';
-
-      const recorder = new MediaRecorder(combined, { mimeType });
-      const chunks = [];
-      recorder.ondataavailable = e => e.data.size > 0 && chunks.push(e.data);
-      const recordDone = new Promise(res => { recorder.onstop = res; });
-
-      recorder.start(250);
-      videoEl.currentTime = 0;
-      audioEl.currentTime = 0;
-      await videoEl.play();
-      audioEl.play().catch(() => {});
-
-      // Progress ko'rsatish
-      const timer = setInterval(() => {
-        const pct = duration > 0 ? Math.round((videoEl.currentTime / duration) * 100) : 0;
-        showStatus(`Video yozib olinmoqda... ${pct}%`, 'loading');
-      }, 500);
-
-      await new Promise(res => {
-        videoEl.onended = res;
-        setTimeout(res, (duration + 10) * 1000); // xavfsizlik timeout
-      });
-
-      clearInterval(timer);
-      audioEl.pause();
-      recorder.stop();
-      await recordDone;
-
-      document.body.removeChild(videoEl);
-      URL.revokeObjectURL(videoURL);
-      URL.revokeObjectURL(audioURL);
-      audioCtx.close().catch(() => {});
-
-      const resultBlob = new Blob(chunks, { type: mimeType });
-      triggerDownload(URL.createObjectURL(resultBlob), `${filename}.webm`);
-      showStatus('Video yuklab olindi ✓', 'ready');
-      $('download-btn').disabled = false;
-      return;
-
-    } catch (err) {
-      console.error('[Download] MediaRecorder xato:', err);
-      showStatus('Xato yuz berdi, audio yuklanmoqda...', 'loading');
+    } else {
+      // Faqat audio
+      setDLP(100, 'Audio tayyorlanmoqda...');
+      await sleep(300);
+      closeDLModal();
+      triggerDownload(URL.createObjectURL(state.recordedBlob), `${filename}_audio.webm`);
+      showStatus('Audio yuklab olindi ✓', 'ready');
     }
-  }
 
-  // Fallback: faqat audio
-  triggerDownload(URL.createObjectURL(state.recordedBlob), `${filename}_audio.webm`);
-  showStatus('Audio yuklab olindi ✓', 'ready');
-  $('download-btn').disabled = false;
+  } catch (err) {
+    closeDLModal();
+    if (signal.aborted || err.name === 'AbortError') {
+      showStatus('Bekor qilindi', 'error');
+    } else {
+      console.error('[DL] Xato:', err);
+      // Oxirgi fallback — faqat audio
+      try {
+        triggerDownload(URL.createObjectURL(state.recordedBlob), `${filename}_audio.webm`);
+        showStatus('Xato yuz berdi — audio yuklab olindi', 'error');
+      } catch (_) {}
+    }
+  } finally {
+    $('download-btn').disabled = false;
+    _dlAbort = null;
+  }
 }
+
+/** MediaRecorder bilan video+audio ni birlashtirib WebM blob qaytaradi */
+async function recordCombined(videoBlob, audioBlob, signal) {
+  const videoURL = URL.createObjectURL(videoBlob);
+  const audioURL = URL.createObjectURL(audioBlob);
+
+  const videoEl = document.createElement('video');
+  videoEl.src = videoURL;
+  videoEl.muted = true;
+  videoEl.playsInline = true;
+  videoEl.style.cssText = 'position:fixed;top:-9999px;left:-9999px;width:1px;height:1px;pointer-events:none;';
+  document.body.appendChild(videoEl);
+
+  const audioEl = new Audio(audioURL);
+
+  try {
+    // Metadata kutish
+    await new Promise((res, rej) => {
+      videoEl.onloadedmetadata = res;
+      videoEl.onerror = () => rej(new Error('Video yuklanmadi'));
+      setTimeout(() => rej(new Error('Timeout')), 15000);
+    });
+
+    if (signal.aborted) throw new DOMException('Aborted', 'AbortError');
+
+    const duration = videoEl.duration || 0;
+
+    // Audio stream
+    const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    const dest     = audioCtx.createMediaStreamDestination();
+    audioCtx.createMediaElementSource(audioEl).connect(dest);
+
+    // Video stream
+    const vStream    = videoEl.captureStream ? videoEl.captureStream() : videoEl.mozCaptureStream();
+    const vTrack     = vStream.getVideoTracks()[0];
+    if (!vTrack) throw new Error('Video stream olinmadi');
+
+    const combined = new MediaStream([vTrack, ...dest.stream.getTracks()]);
+
+    const mimeType = [
+      'video/webm;codecs=vp9,opus',
+      'video/webm;codecs=vp8,opus',
+      'video/webm',
+    ].find(t => MediaRecorder.isTypeSupported(t)) || 'video/webm';
+
+    const recorder = new MediaRecorder(combined, {
+      mimeType,
+      videoBitsPerSecond: 2_000_000,
+      audioBitsPerSecond: 192_000,
+    });
+    const chunks = [];
+    recorder.ondataavailable = e => e.data.size > 0 && chunks.push(e.data);
+    const recDone = new Promise(r => { recorder.onstop = r; });
+
+    // Abort orqali to'xtatish
+    const onAbort = () => {
+      videoEl.pause();
+      audioEl.pause();
+      if (recorder.state !== 'inactive') recorder.stop();
+    };
+    signal.addEventListener('abort', onAbort, { once: true });
+
+    recorder.start(200);
+    videoEl.currentTime = 0;
+    audioEl.currentTime = 0;
+    await videoEl.play();
+    audioEl.play().catch(() => {});
+
+    // Progress interval
+    const interval = setInterval(() => {
+      if (duration > 0) {
+        const pct  = Math.round((videoEl.currentTime / duration) * 85);
+        const left = Math.max(0, Math.round(duration - videoEl.currentTime));
+        setDLP(pct, `Yozib olinmoqda... ${left}s qoldi`);
+      }
+    }, 400);
+
+    // Video tugashini kutish
+    await new Promise(r => {
+      videoEl.onended = r;
+      setTimeout(r, (duration + 15) * 1000);
+    });
+
+    clearInterval(interval);
+    signal.removeEventListener('abort', onAbort);
+
+    if (signal.aborted) throw new DOMException('Aborted', 'AbortError');
+
+    audioEl.pause();
+    if (recorder.state !== 'inactive') recorder.stop();
+    await recDone;
+    audioCtx.close().catch(() => {});
+
+    return new Blob(chunks, { type: mimeType });
+
+  } finally {
+    try { document.body.removeChild(videoEl); } catch {}
+    URL.revokeObjectURL(videoURL);
+    URL.revokeObjectURL(audioURL);
+  }
+}
+
+const sleep = ms => new Promise(r => setTimeout(r, ms));
 
 function triggerDownload(url, filename) {
   const a = document.createElement('a');
