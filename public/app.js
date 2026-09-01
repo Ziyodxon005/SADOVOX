@@ -1030,15 +1030,13 @@ function demuxMP4Video(videoBlob, signal, onProgress) {
       if (!track) { reject(new Error('Video treki topilmadi')); return; }
 
       // avcC description extraction (SPS+PPS for H264)
+      // DataStream ishlatmaymiz — qo'lda AVCC binary formatini yig'amiz
       let description = null;
       try {
         const trak  = file.getTrackById(track.id);
         const entry = trak.mdia.minf.stbl.stsd.entries[0];
         if (entry.avcC) {
-          const stream = new MP4Box.DataStream(undefined, 0, MP4Box.DataStream.BIG_ENDIAN);
-          entry.avcC.write(stream);
-          // Box structure: [4-byte size][4-byte 'avcC'][actual data...]
-          description = new Uint8Array(stream.buffer, 8, stream.position - 8);
+          description = buildAVCCDesc(entry.avcC);
         }
       } catch (e) { console.warn('[demux] avcC:', e); }
 
@@ -1077,6 +1075,57 @@ function demuxMP4Video(videoBlob, signal, onProgress) {
     file.appendBuffer(ab);
     file.flush();
   });
+}
+
+/**
+ * mp4box.js avcC ob'ektidan AVCC binary descriptor yig'adi
+ * (DataStream'siz — ISO 14496-15 §5.3.3.1.2)
+ */
+function buildAVCCDesc(avcC) {
+  const spsList = avcC.SPS || [];
+  const ppsList = avcC.PPS || [];
+
+  // Kerakli o'lchamni hisoblab chiqamiz
+  let size = 6;
+  for (const sps of spsList) { const n = toU8(sps.nalu || sps.data); size += 2 + n.byteLength; }
+  for (const pps of ppsList) { const n = toU8(pps.nalu || pps.data); size += 2 + n.byteLength; }
+
+  const buf = new Uint8Array(size);
+  let pos = 0;
+
+  buf[pos++] = avcC.configurationVersion   || 1;
+  buf[pos++] = avcC.AVCProfileIndication   || 0;
+  buf[pos++] = avcC.profile_compatibility  || 0;
+  buf[pos++] = avcC.AVCLevelIndication     || 0;
+  buf[pos++] = 0xFF;                                      // lengthSizeMinusOne = 3
+  buf[pos++] = 0xE0 | (spsList.length & 0x1F);            // numSPS
+
+  for (const sps of spsList) {
+    const n = toU8(sps.nalu || sps.data);
+    buf[pos++] = (n.byteLength >> 8) & 0xFF;
+    buf[pos++] =  n.byteLength       & 0xFF;
+    buf.set(n, pos); pos += n.byteLength;
+  }
+
+  buf[pos++] = ppsList.length & 0xFF;                     // numPPS
+
+  for (const pps of ppsList) {
+    const n = toU8(pps.nalu || pps.data);
+    buf[pos++] = (n.byteLength >> 8) & 0xFF;
+    buf[pos++] =  n.byteLength       & 0xFF;
+    buf.set(n, pos); pos += n.byteLength;
+  }
+
+  return buf.slice(0, pos);
+}
+
+/** Turli xil buffer turlarini Uint8Array ga o'giradi */
+function toU8(v) {
+  if (!v) return new Uint8Array(0);
+  if (v instanceof Uint8Array) return v;
+  if (v instanceof ArrayBuffer) return new Uint8Array(v);
+  if (ArrayBuffer.isView(v)) return new Uint8Array(v.buffer, v.byteOffset, v.byteLength);
+  return new Uint8Array(0);
 }
 
 /** PCM AudioBuffer → AAC (WebCodecs AudioEncoder) → mp4-muxer */
