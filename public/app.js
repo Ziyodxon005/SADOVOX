@@ -790,31 +790,6 @@ async function stopRecording() {
   });
 }
 
-/* ── Client-side FFmpeg (brauzerda video+audio merge) ──── */
-let _ffmpeg = null;
-
-async function loadFFmpeg() {
-  if (_ffmpeg) return _ffmpeg;
-  showStatus('FFmpeg yuklanmoqda... (bir marta)', 'loading');
-
-  const { FFmpeg } = await import('https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.12.10/+esm');
-  const { toBlobURL } = await import('https://cdn.jsdelivr.net/npm/@ffmpeg/util@0.12.1/+esm');
-
-  const ffmpeg = new FFmpeg();
-  const coreURL   = 'https://unpkg.com/@ffmpeg/core@0.12.6/dist/esm';
-  const ffmpegCDN = 'https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.12.10/dist/esm';
-
-  // Barchasini blob: URL ga o'giramiz → same-origin → COEP bloklamaydi
-  await ffmpeg.load({
-    coreURL:   await toBlobURL(`${coreURL}/ffmpeg-core.js`,   'text/javascript'),
-    wasmURL:   await toBlobURL(`${coreURL}/ffmpeg-core.wasm`, 'application/wasm'),
-    workerURL: await toBlobURL(`${ffmpegCDN}/worker.js`,      'text/javascript'),
-  });
-
-  _ffmpeg = ffmpeg;
-  return ffmpeg;
-}
-
 async function downloadDubbedAudio() {
   if (!state.recordedBlob) {
     showError('Hali dublyaj audiosi yo\'q. Avval dublyaj qiling.');
@@ -824,72 +799,102 @@ async function downloadDubbedAudio() {
   const name = state.projectName || 'dubbed';
   const filename = `SADO_VOX_UZ_${name}`;
   $('download-btn').disabled = true;
-  showStatus('Video tayyorlanmoqda...', 'loading');
 
-  // 1. Client-side ffmpeg.wasm bilan merge (Vercel limitidan o'tadi)
+  // Video + Audio — MediaRecorder bilan brauzerda birlashtirish
   if (state.videoBlob) {
     try {
-      const ffmpeg = await loadFFmpeg();
-      const { fetchFile } = await import('https://cdn.jsdelivr.net/npm/@ffmpeg/util@0.12.1/+esm');
+      showStatus('Video tayyorlanmoqda... iltimos kuting', 'loading');
 
-      showStatus('Video + Audio birlashtirilmoqda...', 'loading');
+      const videoURL = URL.createObjectURL(state.videoBlob);
+      const audioURL = URL.createObjectURL(state.recordedBlob);
 
-      await ffmpeg.writeFile('input.mp4', await fetchFile(state.videoBlob));
-      await ffmpeg.writeFile('audio.webm', await fetchFile(state.recordedBlob));
+      // Yashirin video va audio elementlari
+      const videoEl = document.createElement('video');
+      videoEl.src = videoURL;
+      videoEl.muted = true; // original ovoz o'chiq
+      videoEl.playsInline = true;
+      videoEl.style.cssText = 'position:fixed;top:-9999px;left:-9999px;width:1px;height:1px';
+      document.body.appendChild(videoEl);
 
-      await ffmpeg.exec([
-        '-i', 'input.mp4',
-        '-i', 'audio.webm',
-        '-c:v', 'copy',
-        '-c:a', 'aac',
-        '-b:a', '192k',
-        '-map', '0:v:0',
-        '-map', '1:a:0',
-        '-shortest',
-        '-movflags', 'frag_keyframe+empty_moov+default_base_moof',
-        'output.mp4'
-      ]);
+      const audioEl = new Audio(audioURL);
 
-      const data = await ffmpeg.readFile('output.mp4');
-      const mp4Blob = new Blob([data.buffer], { type: 'video/mp4' });
+      await new Promise((res, rej) => {
+        videoEl.onloadedmetadata = res;
+        videoEl.onerror = rej;
+        setTimeout(rej, 10000);
+      });
 
-      await ffmpeg.deleteFile('input.mp4').catch(() => {});
-      await ffmpeg.deleteFile('audio.webm').catch(() => {});
-      await ffmpeg.deleteFile('output.mp4').catch(() => {});
+      const duration = videoEl.duration || 0;
 
-      triggerDownload(URL.createObjectURL(mp4Blob), `${filename}.mp4`);
+      // AudioContext — dubbed audio stream
+      const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      const dest = audioCtx.createMediaStreamDestination();
+      const audioSrc = audioCtx.createMediaElementSource(audioEl);
+      audioSrc.connect(dest);
+
+      // Video stream + Audio stream birlashtirish
+      const videoStream = videoEl.captureStream
+        ? videoEl.captureStream()
+        : videoEl.mozCaptureStream();
+      const videoTracks = videoStream.getVideoTracks();
+      if (!videoTracks.length) throw new Error('Video stream olinmadi');
+
+      const combined = new MediaStream([videoTracks[0], ...dest.stream.getTracks()]);
+
+      // Eng yaxshi format tanlash
+      const mimeType = [
+        'video/webm;codecs=vp9,opus',
+        'video/webm;codecs=vp8,opus',
+        'video/webm',
+      ].find(t => MediaRecorder.isTypeSupported(t)) || 'video/webm';
+
+      const recorder = new MediaRecorder(combined, { mimeType });
+      const chunks = [];
+      recorder.ondataavailable = e => e.data.size > 0 && chunks.push(e.data);
+      const recordDone = new Promise(res => { recorder.onstop = res; });
+
+      recorder.start(250);
+      videoEl.currentTime = 0;
+      audioEl.currentTime = 0;
+      await videoEl.play();
+      audioEl.play().catch(() => {});
+
+      // Progress ko'rsatish
+      const timer = setInterval(() => {
+        const pct = duration > 0 ? Math.round((videoEl.currentTime / duration) * 100) : 0;
+        showStatus(`Video yozib olinmoqda... ${pct}%`, 'loading');
+      }, 500);
+
+      await new Promise(res => {
+        videoEl.onended = res;
+        setTimeout(res, (duration + 10) * 1000); // xavfsizlik timeout
+      });
+
+      clearInterval(timer);
+      audioEl.pause();
+      recorder.stop();
+      await recordDone;
+
+      document.body.removeChild(videoEl);
+      URL.revokeObjectURL(videoURL);
+      URL.revokeObjectURL(audioURL);
+      audioCtx.close().catch(() => {});
+
+      const resultBlob = new Blob(chunks, { type: mimeType });
+      triggerDownload(URL.createObjectURL(resultBlob), `${filename}.webm`);
       showStatus('Video yuklab olindi ✓', 'ready');
       $('download-btn').disabled = false;
       return;
 
-    } catch (clientErr) {
-      console.warn('[Download] Client ffmpeg xato, server ga urinaman:', clientErr);
-
-      // 2. Fallback: server-side merge (kichik fayllar uchun)
-      try {
-        showStatus('Server orqali birlashtirilmoqda...', 'loading');
-        const formData = new FormData();
-        formData.append('video', state.videoBlob, 'original.mp4');
-        formData.append('audio', state.recordedBlob, 'dubbed.webm');
-        formData.append('name', filename);
-
-        const resp = await fetch('/api/merge-video', { method: 'POST', body: formData });
-        if (!resp.ok) throw new Error(`Server xatosi: ${resp.status}`);
-
-        const mp4Blob = await resp.blob();
-        triggerDownload(URL.createObjectURL(mp4Blob), `${filename}.mp4`);
-        showStatus('Video yuklab olindi ✓', 'ready');
-        $('download-btn').disabled = false;
-        return;
-      } catch (serverErr) {
-        console.error('[Download] Server merge ham xato:', serverErr);
-      }
+    } catch (err) {
+      console.error('[Download] MediaRecorder xato:', err);
+      showStatus('Xato yuz berdi, audio yuklanmoqda...', 'loading');
     }
   }
 
-  // 3. Oxirgi fallback: faqat audio → webm
-  triggerDownload(URL.createObjectURL(state.recordedBlob), `${filename}.webm`);
-  showStatus('Yuklab olindi (webm) ✓', 'ready');
+  // Fallback: faqat audio
+  triggerDownload(URL.createObjectURL(state.recordedBlob), `${filename}_audio.webm`);
+  showStatus('Audio yuklab olindi ✓', 'ready');
   $('download-btn').disabled = false;
 }
 
