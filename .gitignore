@@ -17,3 +17,6 @@ npm-debug.log*
 # Temp
 tmp/
 temp/
+
+# Vercel
+.vercel/
