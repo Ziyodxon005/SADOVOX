@@ -790,6 +790,28 @@ async function stopRecording() {
   });
 }
 
+/* ── Client-side FFmpeg (brauzerda video+audio merge) ──── */
+let _ffmpeg = null;
+
+async function loadFFmpeg() {
+  if (_ffmpeg) return _ffmpeg;
+  showStatus('FFmpeg yuklanmoqda... (bir marta)', 'loading');
+
+  const { FFmpeg } = await import('https://cdn.jsdelivr.net/npm/@ffmpeg/ffmpeg@0.12.10/+esm');
+  const { toBlobURL } = await import('https://cdn.jsdelivr.net/npm/@ffmpeg/util@0.12.1/+esm');
+
+  const ffmpeg = new FFmpeg();
+  const baseURL = 'https://unpkg.com/@ffmpeg/core@0.12.6/dist/esm';
+
+  await ffmpeg.load({
+    coreURL: await toBlobURL(`${baseURL}/ffmpeg-core.js`, 'text/javascript'),
+    wasmURL: await toBlobURL(`${baseURL}/ffmpeg-core.wasm`, 'application/wasm'),
+  });
+
+  _ffmpeg = ffmpeg;
+  return ffmpeg;
+}
+
 async function downloadDubbedAudio() {
   if (!state.recordedBlob) {
     showError('Hali dublyaj audiosi yo\'q. Avval dublyaj qiling.');
@@ -801,51 +823,71 @@ async function downloadDubbedAudio() {
   $('download-btn').disabled = true;
   showStatus('Video tayyorlanmoqda...', 'loading');
 
-  // Video + Audio merge — server-side ffmpeg bilan
+  // 1. Client-side ffmpeg.wasm bilan merge (Vercel limitidan o'tadi)
   if (state.videoBlob) {
     try {
+      const ffmpeg = await loadFFmpeg();
+      const { fetchFile } = await import('https://cdn.jsdelivr.net/npm/@ffmpeg/util@0.12.1/+esm');
+
       showStatus('Video + Audio birlashtirilmoqda...', 'loading');
-      const formData = new FormData();
-      formData.append('video', state.videoBlob, 'original.mp4');
-      formData.append('audio', state.recordedBlob, 'dubbed.webm');
-      formData.append('name', filename);
 
-      const resp = await fetch('/api/merge-video', { method: 'POST', body: formData });
-      if (!resp.ok) throw new Error(`Server xatosi: ${resp.status}`);
+      await ffmpeg.writeFile('input.mp4', await fetchFile(state.videoBlob));
+      await ffmpeg.writeFile('audio.webm', await fetchFile(state.recordedBlob));
 
-      const mp4Blob = await resp.blob();
+      await ffmpeg.exec([
+        '-i', 'input.mp4',
+        '-i', 'audio.webm',
+        '-c:v', 'copy',
+        '-c:a', 'aac',
+        '-b:a', '192k',
+        '-map', '0:v:0',
+        '-map', '1:a:0',
+        '-shortest',
+        '-movflags', 'frag_keyframe+empty_moov+default_base_moof',
+        'output.mp4'
+      ]);
+
+      const data = await ffmpeg.readFile('output.mp4');
+      const mp4Blob = new Blob([data.buffer], { type: 'video/mp4' });
+
+      await ffmpeg.deleteFile('input.mp4').catch(() => {});
+      await ffmpeg.deleteFile('audio.webm').catch(() => {});
+      await ffmpeg.deleteFile('output.mp4').catch(() => {});
+
       triggerDownload(URL.createObjectURL(mp4Blob), `${filename}.mp4`);
       showStatus('Video yuklab olindi ✓', 'ready');
       $('download-btn').disabled = false;
       return;
 
-    } catch (err) {
-      console.error('[Download] Merge xato — faqat audio:', err);
-      // fallback quyida
+    } catch (clientErr) {
+      console.warn('[Download] Client ffmpeg xato, server ga urinaman:', clientErr);
+
+      // 2. Fallback: server-side merge (kichik fayllar uchun)
+      try {
+        showStatus('Server orqali birlashtirilmoqda...', 'loading');
+        const formData = new FormData();
+        formData.append('video', state.videoBlob, 'original.mp4');
+        formData.append('audio', state.recordedBlob, 'dubbed.webm');
+        formData.append('name', filename);
+
+        const resp = await fetch('/api/merge-video', { method: 'POST', body: formData });
+        if (!resp.ok) throw new Error(`Server xatosi: ${resp.status}`);
+
+        const mp4Blob = await resp.blob();
+        triggerDownload(URL.createObjectURL(mp4Blob), `${filename}.mp4`);
+        showStatus('Video yuklab olindi ✓', 'ready');
+        $('download-btn').disabled = false;
+        return;
+      } catch (serverErr) {
+        console.error('[Download] Server merge ham xato:', serverErr);
+      }
     }
   }
 
-  // Fallback: faqat audio → MP4
-  try {
-    showStatus('Audio MP4 ga o\'tkazilmoqda...', 'loading');
-    const formData = new FormData();
-    formData.append('audio', state.recordedBlob, 'dubbed.webm');
-    formData.append('name', name);
-
-    const resp = await fetch('/api/convert-audio', { method: 'POST', body: formData });
-    if (!resp.ok) throw new Error(`Audio konvert xato: ${resp.status}`);
-
-    const mp4Blob = await resp.blob();
-    triggerDownload(URL.createObjectURL(mp4Blob), `${filename}_audio.mp4`);
-    showStatus('Audio yuklab olindi ✓', 'ready');
-
-  } catch (err2) {
-    console.error('[Download] Audio convert xato — webm:', err2);
-    triggerDownload(URL.createObjectURL(state.recordedBlob), `${filename}.webm`);
-    showStatus('Yuklab olindi (webm) ✓', 'ready');
-  } finally {
-    $('download-btn').disabled = false;
-  }
+  // 3. Oxirgi fallback: faqat audio → webm
+  triggerDownload(URL.createObjectURL(state.recordedBlob), `${filename}.webm`);
+  showStatus('Yuklab olindi (webm) ✓', 'ready');
+  $('download-btn').disabled = false;
 }
 
 function triggerDownload(url, filename) {
