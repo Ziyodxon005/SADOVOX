@@ -34,6 +34,8 @@ const state = {
   mediaSource: null,
   nextPlayTime: 0,
   videoReady: false,
+  dubAudioScheduled: 0,  // dublyaj audio umumiy sekundlari
+  syncInterval: null,     // video-audio sync timer
   dubbing: false,
   paused: false,
   inputTranscript: '',
@@ -228,7 +230,6 @@ async function buildProjectCard(p) {
   }
 
   // Info
-  // Sana: "1 Sentabr 2026" ko'rinishida
   const _d = new Date(p.createdAt);
   const months = ['Yanvar','Fevral','Mart','Aprel','May','Iyun','Iyul','Avgust','Sentabr','Oktabr','Noyabr','Dekabr'];
   const date = `${_d.getDate()} ${months[_d.getMonth()]} ${_d.getFullYear()}`;
@@ -361,7 +362,7 @@ function setupDubbedPlayback(audioBlob) {
   $('dub-btn').classList.add('hidden');
   $('stop-btn').classList.add('hidden');
   showDownloadBtn(true);
-  showStatus('🎧 Saqlangan dublyaj — Play bosing', 'ready');
+  showStatus('🎧 Saqlangan dublyaj — Playni bosing', 'ready');
 }
 
 function cleanupDubAudio() {
@@ -387,7 +388,6 @@ function cleanupDubAudio() {
 function initEditor() {
   // Back button
   $('back-to-dash').addEventListener('click', () => {
-    // history.back() → popstate → onPopState → dashboard
     history.back();
   });
 
@@ -405,8 +405,7 @@ function initEditor() {
   $('stop-btn').addEventListener('click', stopDubbing);
   $('reset-btn').addEventListener('click', () => {
     if (state.savedDubMode) {
-      // Saqlangan rejimda: faqat dubbed audioni tozala, video qolsin
-      cleanupDubAudio();           // savedDubMode = false, dub-btn qaytadi
+      cleanupDubAudio();
       state.recordedBlob = null;
       showDownloadBtn(false);
       if (state.dubbing) stopDubbing();
@@ -415,7 +414,6 @@ function initEditor() {
       updateDubBtn('start');
       showStatus('Qayta dublyaj uchun tayyor \u2014 Dublyaj Boshlash tugmasini bosing', 'ready');
     } else {
-      // Yangi loyiha rejimida: hammani tozalab upload ekraniga qaytarish
       if (state.dubbing) stopDubbing();
       cleanupAudio();
       state.recordedBlob = null;
@@ -539,9 +537,26 @@ async function startDubbing() {
   try {
     showStatus('SADO VOX bilan ulanmoqda... (iltimos kuting)', 'connecting');
     $('dub-btn').disabled = true;
-    $('stop-btn').disabled = false;  // to'xtatish imkoni bo'lsin
+    $('stop-btn').disabled = false;
 
     await setupAudioContext();
+
+    // ✅ PRE-ROLL: Video MUTED holda orqa fonda boshlanadi
+    // Foydalanuvchi OVERLAY ko'radi — video ko'rinmaydi
+    // Gemini audio ola boshlaydi va tarjima tayyorlaydi
+    // Birinchi ovoz chiqishi bilan overlay ketadi + video sinxron davom etadi
+    state.firstAudioReceived = false;
+    showPrerollOverlay(true);
+
+    const vid = $('main-video');
+    vid.muted = true;
+    vid.currentTime = 0;
+    try {
+      await vid.play();
+      console.log('[App] PRE-ROLL: Video muted + overlay, Gemini kutilmoqda...');
+    } catch (prerollErr) {
+      console.warn('[App] PRE-ROLL play xato:', prerollErr);
+    }
 
     state.gemini = new GeminiLiveTranslate(state.targetLanguage);
     state.dubbing = true;
@@ -549,7 +564,6 @@ async function startDubbing() {
 
     attachAIListeners();
     await state.gemini.connect();
-    // ⚠️ Video 'ready' hodisasida boshlanadi — bu yerda EMAS
 
     showDownloadBtn(false);
     $('transcript-panel').classList.remove('hidden');
@@ -561,6 +575,10 @@ async function startDubbing() {
     state.dubbing = false;
     $('dub-btn').disabled = false;
     $('stop-btn').disabled = true;
+    showPrerollOverlay(false);
+    const vid = $('main-video');
+    vid.pause();
+    vid.muted = false;
     cleanupAudio();
   }
 }
@@ -586,7 +604,15 @@ function resumeDubbing() {
 async function stopDubbing() {
   state.dubbing = false;
   state.paused = false;
+  state.firstAudioReceived = false;
+  showPrerollOverlay(false); // Overlay ni albatta yashirish
   $('main-video').pause();
+  $('main-video').muted = false;
+  $('main-video').playbackRate = 1.0;
+
+  // Sinxronizatsiyani to'xtatish
+  if (state.syncInterval) { clearInterval(state.syncInterval); state.syncInterval = null; }
+  state.dubAudioScheduled = 0;
 
   if (state.gemini) {
     state.gemini.disconnect();
@@ -639,6 +665,8 @@ async function setupAudioContext() {
 /**
  * Dubbed audio (Int16 PCM, 24kHz) ni ijro etadi va yozib oladi.
  */
+const MAX_AUDIO_LAG = 0.3; // 300ms — ko'proq lag bo'lsa reset
+
 function playDubbedAudio(int16Buffer) {
   const ctx = state.audioContext;
   if (!ctx) return;
@@ -651,6 +679,22 @@ function playDubbedAudio(int16Buffer) {
   const int16 = new Int16Array(int16Buffer);
   if (int16.length === 0) return;
 
+  // ✅ BIRINCHI OVOZ: Overlay olinadi, video sinxron davom etadi
+  if (!state.firstAudioReceived) {
+    state.firstAudioReceived = true;
+    showPrerollOverlay(false);  // Overlay yo'qoladi
+    // Video muted holda allaqachon yurib turibdi
+    // Faqat unmute qilamiz — pozitsiya to'g'ri
+    const vid = $('main-video');
+    vid.muted = false; // endi ovozi chiqadi (lekin dubbed audio ustun)
+    // Aslida video ovozi o'chirilishi kerak — dubbed audio eshitilsin
+    // startAudioCapture da silentGain=0 qilindi, shuning uchun
+    // video ovozi audio context orqali ketadi va foydalanuvchi eshitmaydi
+    // Yozib olishni ham shu paytdan boshlaymiz
+    startRecording();
+    console.log('[App] Birinchi ovoz! Overlay ketdi. Video pozitsiyasi:', vid.currentTime.toFixed(2), 's');
+  }
+
   const float32 = new Float32Array(int16.length);
   for (let i = 0; i < int16.length; i++) {
     float32[i] = int16[i] / 32768.0;
@@ -662,16 +706,56 @@ function playDubbedAudio(int16Buffer) {
   const source = ctx.createBufferSource();
   source.buffer = audioBuffer;
   source.connect(ctx.destination);
-  // Also connect to recording destination
   if (state.recordingDest) source.connect(state.recordingDest);
 
   const bufferDuration = float32.length / 24000;
   const now = ctx.currentTime;
-  if (state.nextPlayTime < now + 0.01) {
-    state.nextPlayTime = now + 0.05;
+
+  // Agar nextPlayTime juda oldinda (>300ms lag) yoki orqada — reset
+  if (state.nextPlayTime < now || state.nextPlayTime > now + MAX_AUDIO_LAG) {
+    state.nextPlayTime = now + 0.05; // 50ms buffer
   }
+
   source.start(state.nextPlayTime);
   state.nextPlayTime += bufferDuration;
+
+  // Sinxronizatsiya uchun: umumiy dublyaj audio vaqtini kuzatamiz
+  state.dubAudioScheduled += bufferDuration;
+}
+
+/**
+ * Video tezligini dublyaj audioga moslashtiradi.
+ * Audio orqada qolsa — video sekinlashadi.
+ * Audio yetib kelsa — normal tezlikka qaytadi.
+ */
+function syncVideoToAudio() {
+  const vid = $('main-video');
+  if (!vid || vid.paused || !state.dubbing) return;
+
+  const videoTime = vid.currentTime;
+  const audioTime = state.dubAudioScheduled;
+
+  // Agar hali audio kelmagan bo'lsa — kutamiz
+  if (audioTime < 0.5) return;
+
+  const gap = videoTime - audioTime; // ijobiy = video oldinda
+
+  if (gap > 1.5) {
+    // Juda katta farq — video'ni sekinlatamiz
+    vid.playbackRate = 0.7;
+  } else if (gap > 0.8) {
+    // O'rtacha farq
+    vid.playbackRate = 0.85;
+  } else if (gap > 0.3) {
+    // Kichik farq
+    vid.playbackRate = 0.93;
+  } else if (gap < -0.3) {
+    // Audio oldinda — video'ni biroz tezlatamiz
+    vid.playbackRate = 1.1;
+  } else {
+    // Sinxron — normal tezlik
+    vid.playbackRate = 1.0;
+  }
 }
 
 // MediaElementSourceNode faqat bir marta yaratiladi (bir context uchun)
@@ -792,53 +876,7 @@ async function stopRecording() {
 }
 
 /* ══════════════════════════════════════════════════════════
-   DOWNLOAD PROGRESS MODAL
-══════════════════════════════════════════════════════════ */
-let _dlAbort = null;
-
-function openDLModal() {
-  closeDLModal();
-  const el = document.createElement('div');
-  el.id = 'dl-overlay';
-  el.innerHTML = `
-    <div class="dl-card">
-      <span class="dl-card-icon">🎬</span>
-      <h3 class="dl-card-title">Video tayyorlanmoqda</h3>
-      <p class="dl-card-status" id="dl-status-txt">Boshlanyapti...</p>
-      <div class="dl-progress-track">
-        <div class="dl-progress-fill" id="dl-fill"></div>
-      </div>
-      <div class="dl-pct" id="dl-pct-txt">0%</div>
-      <button class="dl-cancel-btn" id="dl-cancel">✕ Bekor qilish</button>
-    </div>
-  `;
-  document.body.appendChild(el);
-  document.getElementById('dl-cancel').onclick = () => {
-    _dlAbort?.abort();
-    // Darhol modal yopiladi — async jarayon o'z-o'zidan abort bo'ladi
-    closeDLModal();
-    showStatus('Bekor qilindi', 'error');
-    const btn = $('download-btn');
-    if (btn) btn.disabled = false;
-  };
-}
-
-function setDLP(pct, msg) {
-  const fill   = document.getElementById('dl-fill');
-  const status = document.getElementById('dl-status-txt');
-  const label  = document.getElementById('dl-pct-txt');
-  if (fill)          fill.style.width  = Math.min(100, pct) + '%';
-  if (status && msg) status.textContent = msg;
-  if (label)         label.textContent  = Math.min(100, Math.round(pct)) + '%';
-}
-
-function closeDLModal() {
-  document.getElementById('dl-overlay')?.remove();
-}
-
-/* ══════════════════════════════════════════════════════════
-   DOWNLOAD — Video+Audio → .mp4
-   MediaRecorder bilan yoziladi, .mp4 kengaytmasi bilan yuklanadi
+   DOWNLOAD
 ══════════════════════════════════════════════════════════ */
 async function downloadDubbedAudio() {
   if (!state.recordedBlob) {
@@ -846,123 +884,57 @@ async function downloadDubbedAudio() {
     return;
   }
 
-  $('download-btn').disabled = true;
-  _dlAbort = new AbortController();
-  const { signal } = _dlAbort;
-  openDLModal();
-
-  const name     = state.projectName || 'dubbed';
+  const name = state.projectName || 'dubbed';
   const filename = `SADO_VOX_UZ_${name}`;
+  $('download-btn').disabled = true;
+  showStatus('Video tayyorlanmoqda...', 'loading');
 
+  // Video + Audio merge (to'liq MP4)
+  if (state.videoBlob) {
+    try {
+      showStatus('Video + Audio birlashtirilmoqda...', 'loading');
+      const formData = new FormData();
+      formData.append('video', state.videoBlob, 'original.mp4');
+      formData.append('audio', state.recordedBlob, 'dubbed.webm');
+      formData.append('name', filename);
+
+      const resp = await fetch('/api/merge-video', { method: 'POST', body: formData });
+      if (!resp.ok) throw new Error(`Server xatosi: ${resp.status}`);
+
+      const mp4Blob = await resp.blob();
+      triggerDownload(URL.createObjectURL(mp4Blob), `${filename}.mp4`);
+      showStatus('Video yuklab olindi ✓', 'ready');
+      $('download-btn').disabled = false;
+      return;
+
+    } catch (err) {
+      console.error('[Download] Merge xato — faqat audio:', err);
+      // fallback quyida
+    }
+  }
+
+  // Fallback: faqat audio → MP4
   try {
-    if (state.videoBlob) {
-      const resultBlob = await recordCombined(state.videoBlob, state.recordedBlob, signal);
-      if (signal.aborted) return;
+    showStatus('Audio MP4 ga o\'tkazilmoqda...', 'loading');
+    const formData = new FormData();
+    formData.append('audio', state.recordedBlob, 'dubbed.webm');
+    formData.append('name', name);
 
-      setDLP(100, 'Tayyor! 🎉');
-      await sleep(350);
-      closeDLModal();
-      // .mp4 kengaytmasi bilan yuklanadi — barcha player o'qiydi
-      triggerDownload(URL.createObjectURL(resultBlob), `${filename}.mp4`);
-      showStatus('Video (MP4) yuklab olindi ✓', 'ready');
+    const resp = await fetch('/api/convert-audio', { method: 'POST', body: formData });
+    if (!resp.ok) throw new Error(`Audio konvert xato: ${resp.status}`);
 
-    } else {
-      setDLP(100, 'Audio tayyorlanmoqda...');
-      await sleep(300);
-      closeDLModal();
-      triggerDownload(URL.createObjectURL(state.recordedBlob), `${filename}_audio.mp4`);
-      showStatus('Audio yuklab olindi ✓', 'ready');
-    }
+    const mp4Blob = await resp.blob();
+    triggerDownload(URL.createObjectURL(mp4Blob), `${filename}_audio.mp4`);
+    showStatus('Audio yuklab olindi ✓', 'ready');
 
-  } catch (err) {
-    closeDLModal();
-    if (signal.aborted || err.name === 'AbortError') {
-      showStatus('Bekor qilindi', 'error');
-    } else {
-      console.error('[DL] Xato:', err);
-      try {
-        triggerDownload(URL.createObjectURL(state.recordedBlob), `${filename}_audio.mp4`);
-        showStatus('Xato — audio yuklab olindi', 'error');
-      } catch (_) {}
-    }
+  } catch (err2) {
+    console.error('[Download] Audio convert xato — webm:', err2);
+    triggerDownload(URL.createObjectURL(state.recordedBlob), `${filename}.webm`);
+    showStatus('Yuklab olindi (webm) ✓', 'ready');
   } finally {
     $('download-btn').disabled = false;
-    _dlAbort = null;
   }
 }
-
-/** MediaRecorder bilan video+audio yozib oladi (Firefox/Safari fallback) */
-async function recordCombined(videoBlob, audioBlob, signal) {
-  const videoURL = URL.createObjectURL(videoBlob);
-  const audioURL = URL.createObjectURL(audioBlob);
-  const videoEl  = document.createElement('video');
-  videoEl.src = videoURL; videoEl.muted = true; videoEl.playsInline = true;
-  videoEl.style.cssText = 'position:fixed;top:-9999px;left:-9999px;width:1px;height:1px;pointer-events:none;';
-  document.body.appendChild(videoEl);
-  const audioEl = new Audio(audioURL);
-
-  try {
-    await new Promise((res, rej) => {
-      videoEl.onloadedmetadata = res;
-      videoEl.onerror = () => rej(new Error('Video yuklanmadi'));
-      setTimeout(() => rej(new Error('Timeout')), 15000);
-    });
-    if (signal.aborted) throw new DOMException('Aborted', 'AbortError');
-
-    const duration = videoEl.duration || 0;
-    const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-    const dest     = audioCtx.createMediaStreamDestination();
-    audioCtx.createMediaElementSource(audioEl).connect(dest);
-
-    const vStream = videoEl.captureStream ? videoEl.captureStream() : videoEl.mozCaptureStream();
-    const vTrack  = vStream.getVideoTracks()[0];
-    if (!vTrack) throw new Error('Video stream olinmadi');
-
-    const combined = new MediaStream([vTrack, ...dest.stream.getTracks()]);
-    const mimeType = ['video/webm;codecs=vp9,opus','video/webm;codecs=vp8,opus','video/webm']
-      .find(t => MediaRecorder.isTypeSupported(t)) || 'video/webm';
-
-    const recorder = new MediaRecorder(combined, { mimeType, videoBitsPerSecond: 2_000_000 });
-    const chunks   = [];
-    recorder.ondataavailable = e => e.data.size > 0 && chunks.push(e.data);
-    const recDone  = new Promise(r => { recorder.onstop = r; });
-
-    const onAbort = () => { videoEl.pause(); audioEl.pause(); if (recorder.state !== 'inactive') recorder.stop(); };
-    signal.addEventListener('abort', onAbort, { once: true });
-
-    recorder.start(200);
-    videoEl.currentTime = 0; audioEl.currentTime = 0;
-    await videoEl.play(); audioEl.play().catch(() => {});
-
-    const iv = setInterval(() => {
-      if (duration > 0) {
-        const pct  = Math.round((videoEl.currentTime / duration) * 85);
-        const left = Math.max(0, Math.round(duration - videoEl.currentTime));
-        setDLP(pct, `Yozib olinmoqda... ${left}s qoldi`);
-      }
-    }, 400);
-
-    await new Promise(r => { videoEl.onended = r; setTimeout(r, (duration + 15) * 1000); });
-
-    clearInterval(iv);
-    signal.removeEventListener('abort', onAbort);
-    if (signal.aborted) throw new DOMException('Aborted', 'AbortError');
-
-    audioEl.pause();
-    if (recorder.state !== 'inactive') recorder.stop();
-    await recDone;
-    audioCtx.close().catch(() => {});
-    return new Blob(chunks, { type: mimeType });
-
-  } finally {
-    try { document.body.removeChild(videoEl); } catch {}
-    URL.revokeObjectURL(videoURL);
-    URL.revokeObjectURL(audioURL);
-  }
-}
-
-const sleep = ms => new Promise(r => setTimeout(r, ms));
-
 
 function triggerDownload(url, filename) {
   const a = document.createElement('a');
@@ -1030,25 +1002,34 @@ function attachAIListeners() {
   g.addEventListener('connecting', () => showStatus('SADO VOX bilan ulanmoqda...', 'connecting'));
 
   g.addEventListener('ready', async () => {
-    // Gemini TAYYOR — endi video boshlanadi
-    showStatus(`🔴 Dublyaj — O'zbek tili`, 'active');
+    // Gemini TAYYOR — video orqa fonda (muted) allaqachon yurib turibdi
+    // Bu yerda faqat audio capture yoqamiz — Geminiga audio jo'natila boshlaydi
+    // Birinchi ovoz qaytganda playDubbedAudio() overlay'ni yashiradi
+    showStatus(`🔴 Dublyaj — O'zbek tili (birinchi ovoz kutilmoqda...)`, 'active');
     showLatency('⚡ Dublyaj');
     updateDubBtn('pause');
     $('dub-btn').disabled = false;
     $('stop-btn').disabled = false;
 
-    // Audio pipeline'ni yoqamiz
-    startAudioCapture();
-    startRecording();
+    const vid = $('main-video');
 
-    // Video FAQAT shu yerda boshlanadi — Gemini tayyor
-    $('main-video').currentTime = 0;
-    try {
-      await $('main-video').play();
-      console.log('[App] Video – Gemini ready da boshlandi');
-    } catch (playErr) {
-      console.warn('[App] Video play xato:', playErr);
+    // Video to'xtatilgan bo'lsa (pre-roll ishlamagan) — qaytadan boshlash
+    if (vid.paused) {
+      vid.currentTime = 0;
+      try { await vid.play(); } catch (_) {}
     }
+
+    // Audio pipeline: video capture boshlaydi, Geminiga jo'natiladi
+    // vid.muted = true qoladi — foydalanuvchi eshitmaydi
+    // Birinchi audio chunk kelganda muted=false + startRecording() bo'ladi
+    startAudioCapture();
+
+    // Sinxronizatsiya boshlash
+    state.dubAudioScheduled = 0;
+    if (state.syncInterval) clearInterval(state.syncInterval);
+    state.syncInterval = setInterval(syncVideoToAudio, 300);
+
+    console.log('[App] Gemini ready — Audio capture boshlandi. Video pozitsiyasi:', vid.currentTime.toFixed(2), 's');
   });
 
   g.addEventListener('audio', (e) => {
@@ -1077,8 +1058,14 @@ function attachAIListeners() {
 }
 
 /* ─── Video Events ────────────────────────────────────────── */
-function onVideoPlay() { if (state.dubbing && state.paused) resumeDubbing(); }
-function onVideoPause() { if (state.dubbing && !state.paused) pauseDubbing(); }
+function onVideoPlay() {
+  // Faqat Gemini tayyor bo'lgandan keyin ishlaydi (pre-roll eventlarini o'tkazib yuboradi)
+  if (state.dubbing && state.paused && state.gemini?.isConnected) resumeDubbing();
+}
+function onVideoPause() {
+  // Faqat Gemini tayyor bo'lgandan keyin ishlaydi (pre-roll eventlarini o'tkazib yuboradi)
+  if (state.dubbing && !state.paused && state.gemini?.isConnected) pauseDubbing();
+}
 function onVideoEnded() { stopDubbing(); showStatus('Video tugadi ✓', 'ready'); }
 function onVideoSeeked() { state.nextPlayTime = 0; }
 
@@ -1088,6 +1075,22 @@ function onVideoSeeked() { state.nextPlayTime = 0; }
 function showStatus(text, type = 'idle') {
   $('status-text').textContent = text;
   $('status-dot').className = `status-dot status-${type}`;
+}
+
+/**
+ * PRE-ROLL overlay: ko'rsat/yashir
+ * visible=true  — overlay ko'rinadi (video muted holda orqa fonda)
+ * visible=false — overlay fade-out bilan yo'qoladi
+ */
+function showPrerollOverlay(visible) {
+  const el = $('preroll-overlay');
+  if (!el) return;
+  if (visible) {
+    el.classList.remove('hidden', 'fade-out');
+  } else {
+    el.classList.add('fade-out');
+    setTimeout(() => el.classList.add('hidden'), 420);
+  }
 }
 
 function showError(msg) {
