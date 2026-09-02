@@ -19,15 +19,34 @@ export class GeminiLiveTranslate extends EventTarget {
     this._connectReject = null;
     this._connectTimeout = null;
 
-    // Backend WebSocket proxy URL (API key server tomonida yashirilgan)
-    const protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
-    this._wsUrl = `${protocol}//${location.host}/ws`;
+    // WS URL serverless API dan olinadi (/api/get-ws-url)
+    this._wsUrl = null;
+    this._rotating = false;
   }
 
   // ─── Public API ──────────────────────────────────────────────
 
+  /**
+   * Serverdan Gemini WS URL olish
+   * @param {boolean} rotate - true bo'lsa keyingi kalitga o'tadi
+   */
+  async _fetchWsUrl(rotate = false) {
+    const url = `/api/get-ws-url${rotate ? '?rotate=true' : ''}`;
+    const resp = await fetch(url);
+    if (!resp.ok) {
+      const err = await resp.json().catch(() => ({ error: 'WS URL olishda xato' }));
+      throw new Error(err.error || `HTTP ${resp.status}`);
+    }
+    const data = await resp.json();
+    console.log(`[GeminiLive] WS URL olindi (kalit #${data.keyIndex}/${data.totalKeys})`);
+    return data.url;
+  }
+
   /** Connect and initialize Gemini Live session */
   async connect() {
+    // Avval WS URL ni serverdan olamiz
+    this._wsUrl = await this._fetchWsUrl(false);
+
     return new Promise((resolve, reject) => {
       let connectionTimeout = setTimeout(() => {
         if (!this._sessionActive) {
@@ -137,22 +156,13 @@ export class GeminiLiveTranslate extends EventTarget {
           responseModalities: ['AUDIO'],
           speechConfig: {
             voiceConfig: {
-              prebuiltVoiceConfig: { voiceName: 'Kore' }
+              prebuiltVoiceConfig: { voiceName: 'Aoede' }
             }
           }
         },
         systemInstruction: {
           parts: [{
-            text: `You are an elite real-time voice dubbing interpreter. Your sole task is to listen to the incoming audio and immediately speak a natural, fluent translation in ${targetLangName}.
-
-CRITICAL RULES — follow all of them without exception:
-1. TONE & EMOTION: Mirror the original speaker's tone, emotion, energy and mood exactly — if they are excited, be excited; if calm, be calm; if angry, be angry; if whispering, whisper.
-2. PACING & RHYTHM: Match the original speaker's speaking speed and rhythm as closely as possible. Do not rush or slow down artificially.
-3. PURE LANGUAGE: Speak in completely pure, native ${targetLangName} with zero foreign accent, zero loanword pronunciation errors, and zero hesitation sounds. Every word must sound like a native speaker.
-4. NO ADDITIONS: Never add commentary, explanations, greetings, filler words, or any extra content not present in the original audio.
-5. COMPLETENESS: Translate every single word — do not skip, summarize, or paraphrase.
-6. NATURALNESS: Use natural, conversational ${targetLangName} — not literal word-for-word translation. Adapt idioms and expressions to sound natural.
-7. CONTINUITY: Maintain smooth, uninterrupted speech flow matching the original.`
+            text: `You are a professional real-time interpreter. Your only job is to listen to the audio and speak a fluent, natural translation in ${targetLangName}. Translate everything you hear immediately. Do not add commentary, explanations, or any extra text. Preserve the speaker's tone and pacing as closely as possible.`
           }]
         },
         inputAudioTranscription: {},
@@ -229,6 +239,35 @@ CRITICAL RULES — follow all of them without exception:
     // Error from server
     if (msg.error) {
       console.error('[GeminiLive] Server error:', msg.error);
+      const code = msg.error.code || msg.error.status || '';
+      const isQuota = code === 429 || code === 503 ||
+        String(code).includes('RESOURCE_EXHAUSTED') ||
+        String(code).includes('QUOTA');
+
+      if (isQuota && !this._rotating) {
+        console.warn('[GeminiLive] Quota xatosi — kalit almashtirilmoqda...');
+        this._rotating = true;
+        this._fetchWsUrl(true).then(newUrl => {
+          this._wsUrl = newUrl;
+          this._ws.close(1000, 'key_rotate');
+          // Yangi key bilan qayta ulanish
+          this._rotating = false;
+          this._connected = false;
+          this._sessionActive = false;
+          this.connect().catch(err => {
+            this.dispatchEvent(new CustomEvent('error', {
+              detail: { message: 'Kalit almashtirishda xato: ' + err.message }
+            }));
+          });
+        }).catch(() => {
+          this._rotating = false;
+          this.dispatchEvent(new CustomEvent('error', {
+            detail: { message: 'Barcha API kalitlar limitda', code: 503 }
+          }));
+        });
+        return;
+      }
+
       this.dispatchEvent(new CustomEvent('error', {
         detail: { message: msg.error.message || 'Unknown API error', code: msg.error.code }
       }));
