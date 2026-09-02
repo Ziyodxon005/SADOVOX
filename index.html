@@ -8,8 +8,7 @@
   <meta name="description" content="SADO VOX: Har qanday videoni real-vaqtda o'zbek tiliga dublyaj qiling." />
   <link rel="stylesheet" href="style.css" />
   <link rel="icon" type="image/png" href="logo2.png" />
-  <!-- Vercel Analytics -->
-  <script defer src="/_vercel/insights/script.js"></script>
+  <!-- Vercel Analytics (faqat deploy muhitida yoqiladi) -->
 </head>
 
 <body>
@@ -141,7 +140,7 @@
       <section id="setup-section" class="hero-section" aria-label="Sozlamalar">
         <div class="hero-title">
           <h1>SADO VOX</h1>
-          <p>Video yuklang — biz qolganini qilamiz</p>
+          <p>Videongizni sun'iy intellekt orqali real vaqtda o'zbek tiliga dublyaj qiling</p>
         </div>
 
         <div class="upload-card glass-card">
@@ -167,6 +166,11 @@
         <div class="video-card glass-card">
           <div class="video-wrapper">
             <video id="main-video" controls preload="metadata"></video>
+            <!-- PRE-ROLL OVERLAY: dublyaj boshlanganda ko'rinadi, birinchi ovoz kelganda yo'qoladi -->
+            <div id="preroll-overlay" class="preroll-overlay hidden">
+              <div class="preroll-spinner"></div>
+              <p class="preroll-text">AI dublyaj tayyorlanmoqda...<br><span>Birinchi ovoz chiqishi bilan video boshlanadi</span></p>
+            </div>
             <div class="video-topbar">
               <span class="video-filename" id="video-name">video.mp4</span>
               <span class="original-muted-badge">🔇 Original jim</span>

@@ -388,7 +388,6 @@ function cleanupDubAudio() {
 function initEditor() {
   // Back button
   $('back-to-dash').addEventListener('click', () => {
-    // history.back() → popstate → onPopState → dashboard
     history.back();
   });
 
@@ -406,8 +405,7 @@ function initEditor() {
   $('stop-btn').addEventListener('click', stopDubbing);
   $('reset-btn').addEventListener('click', () => {
     if (state.savedDubMode) {
-      // Saqlangan rejimda: faqat dubbed audioni tozala, video qolsin
-      cleanupDubAudio();           // savedDubMode = false, dub-btn qaytadi
+      cleanupDubAudio();
       state.recordedBlob = null;
       showDownloadBtn(false);
       if (state.dubbing) stopDubbing();
@@ -416,7 +414,6 @@ function initEditor() {
       updateDubBtn('start');
       showStatus('Qayta dublyaj uchun tayyor \u2014 Dublyaj Boshlash tugmasini bosing', 'ready');
     } else {
-      // Yangi loyiha rejimida: hammani tozalab upload ekraniga qaytarish
       if (state.dubbing) stopDubbing();
       cleanupAudio();
       state.recordedBlob = null;
@@ -540,9 +537,26 @@ async function startDubbing() {
   try {
     showStatus('SADO VOX bilan ulanmoqda... (iltimos kuting)', 'connecting');
     $('dub-btn').disabled = true;
-    $('stop-btn').disabled = false;  // to'xtatish imkoni bo'lsin
+    $('stop-btn').disabled = false;
 
     await setupAudioContext();
+
+    // ✅ PRE-ROLL: Video MUTED holda orqa fonda boshlanadi
+    // Foydalanuvchi OVERLAY ko'radi — video ko'rinmaydi
+    // Gemini audio ola boshlaydi va tarjima tayyorlaydi
+    // Birinchi ovoz chiqishi bilan overlay ketadi + video sinxron davom etadi
+    state.firstAudioReceived = false;
+    showPrerollOverlay(true);
+
+    const vid = $('main-video');
+    vid.muted = true;
+    vid.currentTime = 0;
+    try {
+      await vid.play();
+      console.log('[App] PRE-ROLL: Video muted + overlay, Gemini kutilmoqda...');
+    } catch (prerollErr) {
+      console.warn('[App] PRE-ROLL play xato:', prerollErr);
+    }
 
     state.gemini = new GeminiLiveTranslate(state.targetLanguage);
     state.dubbing = true;
@@ -550,7 +564,6 @@ async function startDubbing() {
 
     attachAIListeners();
     await state.gemini.connect();
-    // ⚠️ Video 'ready' hodisasida boshlanadi — bu yerda EMAS
 
     showDownloadBtn(false);
     $('transcript-panel').classList.remove('hidden');
@@ -562,6 +575,10 @@ async function startDubbing() {
     state.dubbing = false;
     $('dub-btn').disabled = false;
     $('stop-btn').disabled = true;
+    showPrerollOverlay(false);
+    const vid = $('main-video');
+    vid.pause();
+    vid.muted = false;
     cleanupAudio();
   }
 }
@@ -587,8 +604,11 @@ function resumeDubbing() {
 async function stopDubbing() {
   state.dubbing = false;
   state.paused = false;
+  state.firstAudioReceived = false;
+  showPrerollOverlay(false); // Overlay ni albatta yashirish
   $('main-video').pause();
-  $('main-video').playbackRate = 1.0; // Normal tezlikka qaytarish
+  $('main-video').muted = false;
+  $('main-video').playbackRate = 1.0;
 
   // Sinxronizatsiyani to'xtatish
   if (state.syncInterval) { clearInterval(state.syncInterval); state.syncInterval = null; }
@@ -658,6 +678,22 @@ function playDubbedAudio(int16Buffer) {
 
   const int16 = new Int16Array(int16Buffer);
   if (int16.length === 0) return;
+
+  // ✅ BIRINCHI OVOZ: Overlay olinadi, video sinxron davom etadi
+  if (!state.firstAudioReceived) {
+    state.firstAudioReceived = true;
+    showPrerollOverlay(false);  // Overlay yo'qoladi
+    // Video muted holda allaqachon yurib turibdi
+    // Faqat unmute qilamiz — pozitsiya to'g'ri
+    const vid = $('main-video');
+    vid.muted = false; // endi ovozi chiqadi (lekin dubbed audio ustun)
+    // Aslida video ovozi o'chirilishi kerak — dubbed audio eshitilsin
+    // startAudioCapture da silentGain=0 qilindi, shuning uchun
+    // video ovozi audio context orqali ketadi va foydalanuvchi eshitmaydi
+    // Yozib olishni ham shu paytdan boshlaymiz
+    startRecording();
+    console.log('[App] Birinchi ovoz! Overlay ketdi. Video pozitsiyasi:', vid.currentTime.toFixed(2), 's');
+  }
 
   const float32 = new Float32Array(int16.length);
   for (let i = 0; i < int16.length; i++) {
@@ -966,30 +1002,34 @@ function attachAIListeners() {
   g.addEventListener('connecting', () => showStatus('SADO VOX bilan ulanmoqda...', 'connecting'));
 
   g.addEventListener('ready', async () => {
-    // Gemini TAYYOR — endi video boshlanadi
-    showStatus(`🔴 Dublyaj — O'zbek tili`, 'active');
+    // Gemini TAYYOR — video orqa fonda (muted) allaqachon yurib turibdi
+    // Bu yerda faqat audio capture yoqamiz — Geminiga audio jo'natila boshlaydi
+    // Birinchi ovoz qaytganda playDubbedAudio() overlay'ni yashiradi
+    showStatus(`🔴 Dublyaj — O'zbek tili (birinchi ovoz kutilmoqda...)`, 'active');
     showLatency('⚡ Dublyaj');
     updateDubBtn('pause');
     $('dub-btn').disabled = false;
     $('stop-btn').disabled = false;
 
-    // Audio pipeline'ni yoqamiz
+    const vid = $('main-video');
+
+    // Video to'xtatilgan bo'lsa (pre-roll ishlamagan) — qaytadan boshlash
+    if (vid.paused) {
+      vid.currentTime = 0;
+      try { await vid.play(); } catch (_) {}
+    }
+
+    // Audio pipeline: video capture boshlaydi, Geminiga jo'natiladi
+    // vid.muted = true qoladi — foydalanuvchi eshitmaydi
+    // Birinchi audio chunk kelganda muted=false + startRecording() bo'ladi
     startAudioCapture();
-    startRecording();
 
     // Sinxronizatsiya boshlash
     state.dubAudioScheduled = 0;
     if (state.syncInterval) clearInterval(state.syncInterval);
     state.syncInterval = setInterval(syncVideoToAudio, 300);
 
-    // Video FAQAT shu yerda boshlanadi — Gemini tayyor
-    $('main-video').currentTime = 0;
-    try {
-      await $('main-video').play();
-      console.log('[App] Video – Gemini ready da boshlandi');
-    } catch (playErr) {
-      console.warn('[App] Video play xato:', playErr);
-    }
+    console.log('[App] Gemini ready — Audio capture boshlandi. Video pozitsiyasi:', vid.currentTime.toFixed(2), 's');
   });
 
   g.addEventListener('audio', (e) => {
@@ -1018,8 +1058,14 @@ function attachAIListeners() {
 }
 
 /* ─── Video Events ────────────────────────────────────────── */
-function onVideoPlay() { if (state.dubbing && state.paused) resumeDubbing(); }
-function onVideoPause() { if (state.dubbing && !state.paused) pauseDubbing(); }
+function onVideoPlay() {
+  // Faqat Gemini tayyor bo'lgandan keyin ishlaydi (pre-roll eventlarini o'tkazib yuboradi)
+  if (state.dubbing && state.paused && state.gemini?.isConnected) resumeDubbing();
+}
+function onVideoPause() {
+  // Faqat Gemini tayyor bo'lgandan keyin ishlaydi (pre-roll eventlarini o'tkazib yuboradi)
+  if (state.dubbing && !state.paused && state.gemini?.isConnected) pauseDubbing();
+}
 function onVideoEnded() { stopDubbing(); showStatus('Video tugadi ✓', 'ready'); }
 function onVideoSeeked() { state.nextPlayTime = 0; }
 
@@ -1029,6 +1075,22 @@ function onVideoSeeked() { state.nextPlayTime = 0; }
 function showStatus(text, type = 'idle') {
   $('status-text').textContent = text;
   $('status-dot').className = `status-dot status-${type}`;
+}
+
+/**
+ * PRE-ROLL overlay: ko'rsat/yashir
+ * visible=true  — overlay ko'rinadi (video muted holda orqa fonda)
+ * visible=false — overlay fade-out bilan yo'qoladi
+ */
+function showPrerollOverlay(visible) {
+  const el = $('preroll-overlay');
+  if (!el) return;
+  if (visible) {
+    el.classList.remove('hidden', 'fade-out');
+  } else {
+    el.classList.add('fade-out');
+    setTimeout(() => el.classList.add('hidden'), 420);
+  }
 }
 
 function showError(msg) {

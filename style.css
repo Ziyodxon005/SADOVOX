@@ -748,3 +748,170 @@ body::after {
   box-shadow: 0 6px 24px rgba(255,71,87,0.35);
   transform: translateY(-1px);
 }
+
+/* ══════════════════════════════════════════════════════════
+   PRE-ROLL OVERLAY
+   Dublyaj boshlanganda video ustida ko'rinadi.
+   Birinchi ovoz chiqishi bilan yo'qoladi.
+══════════════════════════════════════════════════════════ */
+.video-wrapper {
+  position: relative;
+}
+
+.preroll-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 18px;
+  background: rgba(6, 6, 17, 0.88);
+  backdrop-filter: blur(6px);
+  border-radius: var(--r-md, 18px);
+  animation: overlayFadeIn 0.3s var(--ease, ease) both;
+}
+
+@keyframes overlayFadeIn {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
+.preroll-overlay.fade-out {
+  animation: overlayFadeOut 0.4s var(--ease, ease) forwards;
+}
+
+@keyframes overlayFadeOut {
+  from { opacity: 1; }
+  to   { opacity: 0; pointer-events: none; }
+}
+
+/* Spinner */
+.preroll-spinner {
+  width: 52px;
+  height: 52px;
+  border-radius: 50%;
+  border: 3px solid rgba(124, 109, 255, 0.2);
+  border-top-color: #7c6dff;
+  border-right-color: #ff6bcb;
+  animation: prerollSpin 0.9s linear infinite;
+}
+
+@keyframes prerollSpin {
+  to { transform: rotate(360deg); }
+}
+
+.preroll-text {
+  font-size: 0.92rem;
+  color: var(--text-2);
+  text-align: center;
+  line-height: 1.6;
+}
+
+.preroll-text span {
+  font-size: 0.78rem;
+  color: var(--text-3);
+  display: block;
+  margin-top: 4px;
+}
+
+/* ══════════════════════════════════════════════════════════
+   SOURCE CHOOSER  (File vs YouTube)
+══════════════════════════════════════════════════════════ */
+.source-chooser {
+  display: flex;
+  align-items: stretch;
+  gap: 0;
+  padding: 6px;
+  border-radius: var(--r-md);
+  width: 100%;
+  max-width: 520px;
+  margin: 0 auto 4px;
+}
+.source-btn {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 5px;
+  padding: 16px 12px;
+  background: transparent;
+  border: none;
+  border-radius: calc(var(--r-md) - 4px);
+  cursor: pointer;
+  transition: background var(--dur) var(--ease), color var(--dur) var(--ease);
+  color: var(--text-2);
+}
+.source-btn:hover { background: rgba(255,255,255,0.06); color: var(--text); }
+.source-btn.active {
+  background: var(--grad-soft);
+  color: var(--text);
+  box-shadow: 0 0 0 1px rgba(124,109,255,0.3);
+}
+.source-btn-icon  { font-size: 1.6rem; line-height: 1; }
+.source-btn-label { font-size: 0.88rem; font-weight: 600; }
+.source-btn-sub   { font-size: 0.72rem; color: var(--text-3); }
+.source-divider   { width: 1px; background: var(--border); margin: 8px 0; flex-shrink: 0; }
+
+/* ══════════════════════════════════════════════════════════
+   YOUTUBE URL PANEL
+══════════════════════════════════════════════════════════ */
+.yt-input-wrap {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
+  padding: 28px 20px 22px;
+}
+.yt-icon-wrap {
+  width: 56px; height: 56px;
+  border-radius: 50%;
+  background: linear-gradient(135deg, rgba(255,0,0,0.15), rgba(180,0,0,0.08));
+  display: flex; align-items: center; justify-content: center;
+  font-size: 1.5rem;
+  border: 1px solid rgba(255,80,80,0.25);
+}
+.yt-title { font-size: 0.95rem; color: var(--text); }
+.yt-input-row {
+  display: flex;
+  gap: 8px;
+  width: 100%;
+  max-width: 480px;
+}
+.yt-url-input {
+  flex: 1;
+  background: rgba(255,255,255,0.05);
+  border: 1px solid var(--border-hi);
+  border-radius: var(--r-sm);
+  color: var(--text);
+  font-family: inherit;
+  font-size: 0.85rem;
+  padding: 10px 14px;
+  outline: none;
+  transition: border-color var(--dur) var(--ease), box-shadow var(--dur) var(--ease);
+}
+.yt-url-input::placeholder { color: var(--text-3); }
+.yt-url-input:focus {
+  border-color: rgba(124,109,255,0.6);
+  box-shadow: 0 0 0 3px rgba(124,109,255,0.12);
+}
+.btn-yt-load {
+  display: flex; align-items: center; gap: 6px;
+  padding: 10px 18px;
+  border-radius: var(--r-sm);
+  background: var(--grad);
+  border: none;
+  color: #fff;
+  font-family: inherit;
+  font-size: 0.85rem;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+  flex-shrink: 0;
+  transition: opacity var(--dur) var(--ease), transform var(--dur) var(--ease);
+}
+.btn-yt-load:hover  { opacity: 0.85; transform: translateY(-1px); }
+.btn-yt-load:active { transform: translateY(0); }
+.btn-yt-load:disabled { opacity: 0.4; cursor: not-allowed; transform: none; }
+.yt-hint { font-size: 0.75rem; color: var(--text-3); text-align: center; }
