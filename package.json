@@ -1,6 +1,6 @@
 {
   "name": "videovoice",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Real-time video dubbing with Gemini 3.5 Live Translate",
   "main": "server.js",
   "type": "module",
